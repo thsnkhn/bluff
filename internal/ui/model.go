@@ -27,6 +27,9 @@ const (
 	homeScreen
 	loginScreen
 	aboutScreen
+	appMenuScreen
+	usersScreen
+	createUserScreen
 	dashboardScreen
 )
 
@@ -48,12 +51,38 @@ type loginValues struct {
 	password string
 }
 
+type createUserValues struct {
+	username string
+	password string
+	role     string
+}
+
+type appAction string
+
+const (
+	actionUsers       appAction = "users"
+	actionTables      appAction = "tables"
+	actionGames       appAction = "games"
+	actionGameFormats appAction = "game-formats"
+	actionMyInfo      appAction = "my-info"
+	actionLogout      appAction = "logout"
+	actionQuit        appAction = "quit"
+)
+
+type appMenuItem struct {
+	title   string
+	action  appAction
+	enabled bool
+}
+
 // API captures the authenticated operations used by the terminal client.
 type API interface {
 	Health(context.Context) error
 	Login(context.Context, string, string) (api.Session, error)
 	Me(context.Context, string) (api.User, error)
 	Bootstrap(context.Context, string) (api.Bootstrap, error)
+	Users(context.Context, string) ([]api.User, error)
+	CreateUser(context.Context, string, string, string, string) (api.User, error)
 	Logout(context.Context, string) error
 }
 
@@ -75,6 +104,7 @@ type Model struct {
 	spinner            spinner.Model
 	form               *huh.Form
 	login              *loginValues
+	createUser         *createUserValues
 	loading            bool
 	status             string
 	err                error
@@ -82,6 +112,10 @@ type Model struct {
 	user               api.User
 	bootstrap          api.Bootstrap
 	homeIndex          int
+	appIndex           int
+	usersIndex         int
+	users              []api.User
+	notice             string
 	connected          bool
 	checkingConnection bool
 }
@@ -146,6 +180,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.resizeForm()
 			return m, nil
 		}
+		if m.screen == appMenuScreen && !m.loading {
+			switch key {
+			case "up", "k", "shift+tab":
+				m.appIndex = m.nextAppIndex(-1)
+				return m, nil
+			case "down", "j", "tab":
+				m.appIndex = m.nextAppIndex(1)
+				return m, nil
+			case "enter", " ":
+				return m.activateAppItem()
+			case "q":
+				return m, tea.Quit
+			}
+		}
+		if m.screen == usersScreen && !m.loading {
+			switch key {
+			case "up", "k":
+				m.moveUsers(-1)
+				return m, nil
+			case "down", "j":
+				m.moveUsers(1)
+				return m, nil
+			case "c":
+				return m.openCreateUser()
+			case "r":
+				m.loading, m.status, m.err, m.notice = true, "Refreshing users", nil, ""
+				return m, tea.Batch(m.spinner.Tick, m.loadUsersCmd())
+			case "esc", "backspace":
+				m.screen, m.err, m.notice = appMenuScreen, nil, ""
+				return m, nil
+			}
+		}
+		if m.screen == createUserScreen && !m.loading && key == "esc" {
+			m.screen, m.err = usersScreen, nil
+			m.resetCreateUserForm()
+			m.resizeForm()
+			return m, nil
+		}
 		if m.screen == dashboardScreen && !m.loading {
 			switch key {
 			case "q":
@@ -169,6 +241,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	case appMenuMouseMsg:
+		if m.screen == appMenuScreen && !m.loading {
+			items := m.appMenuItems()
+			if msg.index >= 0 && msg.index < len(items) {
+				m.appIndex = msg.index
+				if msg.activate && items[msg.index].enabled {
+					return m.activateAppItem()
+				}
+			}
+		}
+		return m, nil
+	case usersMouseMsg:
+		if m.screen != usersScreen || m.loading {
+			return m, nil
+		}
+		if msg.userIndex >= 0 && msg.userIndex < len(m.users) {
+			m.usersIndex = msg.userIndex
+			return m, nil
+		}
+		if !msg.activate {
+			return m, nil
+		}
+		switch msg.action {
+		case "create":
+			return m.openCreateUser()
+		case "refresh":
+			m.loading, m.status, m.err, m.notice = true, "Refreshing users", nil, ""
+			return m, tea.Batch(m.spinner.Tick, m.loadUsersCmd())
+		case "back":
+			m.screen, m.err, m.notice = appMenuScreen, nil, ""
+			return m, nil
+		}
+		return m, nil
 	case dashboardMouseMsg:
 		if m.screen != dashboardScreen || m.loading || !msg.activate {
 			return m, nil
@@ -186,7 +291,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionRestoredMsg:
 		m.loading = false
 		m.token, m.user, m.bootstrap = msg.token, msg.user, msg.bootstrap
-		m.screen, m.err = dashboardScreen, nil
+		m.screen, m.err, m.connected = appMenuScreen, nil, true
+		m.appIndex = m.firstEnabledAppIndex()
 		return m, nil
 	case loginRequiredMsg:
 		m.loading, m.screen, m.err = false, homeScreen, msg.err
@@ -201,7 +307,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case loginSucceededMsg:
 		m.loading = false
 		m.token, m.user, m.bootstrap = msg.token, msg.user, msg.bootstrap
-		m.screen, m.err = dashboardScreen, nil
+		m.screen, m.err, m.connected = appMenuScreen, nil, true
+		m.appIndex = m.firstEnabledAppIndex()
 		m.login.password = ""
 		return m, nil
 	case operationFailedMsg:
@@ -212,9 +319,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.resizeForm()
 			return m, m.form.Init()
 		}
+		if m.screen == createUserScreen {
+			m.createUser.password = ""
+			m.resetCreateUserForm()
+			m.resizeForm()
+			return m, m.form.Init()
+		}
 		return m, nil
 	case refreshedMsg:
 		m.loading, m.bootstrap, m.err = false, msg.bootstrap, nil
+		return m, nil
+	case usersLoadedMsg:
+		m.loading, m.users, m.err = false, msg.users, nil
+		if len(m.users) == 0 {
+			m.usersIndex = 0
+		} else if m.usersIndex >= len(m.users) {
+			m.usersIndex = len(m.users) - 1
+		}
+		return m, nil
+	case userCreatedMsg:
+		m.loading, m.users, m.err = false, msg.users, nil
+		m.screen, m.notice = usersScreen, "@"+msg.user.Username+" was added"
+		for index, user := range m.users {
+			if user.ID == msg.user.ID {
+				m.usersIndex = index
+				break
+			}
+		}
+		m.resetCreateUserForm()
 		return m, nil
 	case loggedOutMsg:
 		m.loading, m.token, m.user, m.bootstrap = false, "", api.User{}, api.Bootstrap{}
@@ -230,17 +362,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	if m.screen == loginScreen && !m.loading {
+	if (m.screen == loginScreen || m.screen == createUserScreen) && !m.loading {
 		updated, cmd := m.form.Update(msg)
 		if form, ok := updated.(*huh.Form); ok {
 			m.form = form
 		}
 		if m.form.State == huh.StateCompleted {
+			if m.screen == createUserScreen {
+				m.loading, m.status, m.err = true, "Creating user", nil
+				return m, tea.Batch(m.spinner.Tick, m.createUserCmd())
+			}
 			m.loading, m.status, m.err = true, "Taking your seat", nil
 			return m, tea.Batch(m.spinner.Tick, m.loginCmd(m.login.username, m.login.password))
 		}
 		if m.form.State == huh.StateAborted {
-			m.screen = homeScreen
+			if m.screen == createUserScreen {
+				m.screen = usersScreen
+			} else {
+				m.screen = homeScreen
+			}
 			return m, nil
 		}
 		return m, cmd
@@ -261,6 +401,12 @@ func (m Model) View() tea.View {
 		content = m.loginView()
 	case aboutScreen:
 		content = m.aboutView()
+	case appMenuScreen:
+		content = m.appMenuView()
+	case usersScreen:
+		content = m.usersView()
+	case createUserScreen:
+		content = m.createUserView()
 	case dashboardScreen:
 		content = m.dashboardView()
 	}
@@ -286,12 +432,36 @@ func (m *Model) resetLoginForm() {
 	)).WithTheme(huh.ThemeFunc(huh.ThemeCharm)).WithShowHelp(true)
 }
 
+func (m *Model) resetCreateUserForm() {
+	role := "member"
+	username := ""
+	if m.createUser != nil {
+		username = m.createUser.username
+		if m.createUser.role != "" {
+			role = m.createUser.role
+		}
+	}
+	m.createUser = &createUserValues{username: username, role: role}
+	m.form = huh.NewForm(huh.NewGroup(
+		huh.NewInput().Title("Username").Description("3-32 letters, numbers, dots, dashes, or underscores").Value(&m.createUser.username).
+			Placeholder("table-friend").Validate(required("Enter a username")),
+		huh.NewInput().Title("Password").Description("At least 12 characters").Value(&m.createUser.password).
+			EchoMode(huh.EchoModePassword).Validate(required("Enter a password")),
+		huh.NewSelect[string]().Title("Role").Description("Members can sign in; admins can manage users").
+			Options(huh.NewOption("Member", "member"), huh.NewOption("Admin", "admin")).Value(&m.createUser.role),
+	)).WithTheme(huh.ThemeFunc(huh.ThemeCharm)).WithShowHelp(true)
+}
+
 func (m *Model) resizeForm() {
 	if m.form == nil {
 		return
 	}
 	width := min(max(m.width-16, 32), 54)
-	m.form.WithWidth(width).WithHeight(min(max(m.height-18, 8), 16))
+	height := 16
+	if m.screen == createUserScreen {
+		height = 24
+	}
+	m.form.WithWidth(width).WithHeight(min(max(m.height-18, 8), height))
 }
 
 func required(message string) func(string) error {
@@ -317,6 +487,11 @@ type connectionCheckedMsg struct{ err error }
 type loginSucceededMsg sessionRestoredMsg
 type operationFailedMsg struct{ err error }
 type refreshedMsg struct{ bootstrap api.Bootstrap }
+type usersLoadedMsg struct{ users []api.User }
+type userCreatedMsg struct {
+	user  api.User
+	users []api.User
+}
 type loggedOutMsg struct{ err error }
 
 func (m Model) restoreSessionCmd() tea.Cmd {
@@ -406,6 +581,109 @@ func (m Model) refreshCmd() tea.Cmd {
 		}
 		return refreshedMsg{bootstrap: bootstrap}
 	}
+}
+
+func (m Model) loadUsersCmd() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), operationTimeout)
+		defer cancel()
+		users, err := m.api.Users(ctx, m.token)
+		if err != nil {
+			return operationFailedMsg{err: err}
+		}
+		return usersLoadedMsg{users: users}
+	}
+}
+
+func (m Model) createUserCmd() tea.Cmd {
+	username, password, role := m.createUser.username, m.createUser.password, m.createUser.role
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), operationTimeout)
+		defer cancel()
+		user, err := m.api.CreateUser(ctx, m.token, username, password, role)
+		if err != nil {
+			return operationFailedMsg{err: err}
+		}
+		users, err := m.api.Users(ctx, m.token)
+		if err != nil {
+			return operationFailedMsg{err: err}
+		}
+		return userCreatedMsg{user: user, users: users}
+	}
+}
+
+func (m Model) appMenuItems() []appMenuItem {
+	items := make([]appMenuItem, 0, 7)
+	if m.user.Role == "admin" {
+		items = append(items, appMenuItem{title: "Users", action: actionUsers, enabled: true})
+	}
+	items = append(items,
+		appMenuItem{title: "Tables", action: actionTables},
+		appMenuItem{title: "Games", action: actionGames},
+		appMenuItem{title: "Game formats", action: actionGameFormats},
+		appMenuItem{title: "My info", action: actionMyInfo},
+		appMenuItem{title: "Log out", action: actionLogout, enabled: true},
+		appMenuItem{title: "Quit", action: actionQuit, enabled: true},
+	)
+	return items
+}
+
+func (m Model) firstEnabledAppIndex() int {
+	for index, item := range m.appMenuItems() {
+		if item.enabled {
+			return index
+		}
+	}
+	return 0
+}
+
+func (m Model) nextAppIndex(direction int) int {
+	items := m.appMenuItems()
+	if len(items) == 0 {
+		return 0
+	}
+	index := m.appIndex
+	for range items {
+		index = (index + direction + len(items)) % len(items)
+		if items[index].enabled {
+			return index
+		}
+	}
+	return m.appIndex
+}
+
+func (m Model) activateAppItem() (tea.Model, tea.Cmd) {
+	items := m.appMenuItems()
+	if m.appIndex < 0 || m.appIndex >= len(items) || !items[m.appIndex].enabled {
+		return m, nil
+	}
+	switch items[m.appIndex].action {
+	case actionUsers:
+		m.screen, m.loading, m.status, m.err, m.notice = usersScreen, true, "Loading users", nil, ""
+		return m, tea.Batch(m.spinner.Tick, m.loadUsersCmd())
+	case actionLogout:
+		m.loading, m.status, m.err = true, "Closing your session", nil
+		return m, tea.Batch(m.spinner.Tick, m.logoutCmd())
+	case actionQuit:
+		return m, tea.Quit
+	default:
+		return m, nil
+	}
+}
+
+func (m *Model) moveUsers(direction int) {
+	if len(m.users) == 0 {
+		m.usersIndex = 0
+		return
+	}
+	m.usersIndex = (m.usersIndex + direction + len(m.users)) % len(m.users)
+}
+
+func (m Model) openCreateUser() (tea.Model, tea.Cmd) {
+	m.screen, m.err, m.notice = createUserScreen, nil, ""
+	m.resetCreateUserForm()
+	m.resizeForm()
+	return m, m.form.Init()
 }
 
 func (m Model) logoutCmd() tea.Cmd {

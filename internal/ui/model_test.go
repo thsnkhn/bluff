@@ -15,6 +15,7 @@ import (
 
 type fakeAPI struct {
 	bootstrap api.Bootstrap
+	users     []api.User
 }
 
 func (f fakeAPI) Health(context.Context) error { return nil }
@@ -26,6 +27,10 @@ func (f fakeAPI) Me(context.Context, string) (api.User, error) {
 }
 func (f fakeAPI) Bootstrap(context.Context, string) (api.Bootstrap, error) {
 	return f.bootstrap, nil
+}
+func (f fakeAPI) Users(context.Context, string) ([]api.User, error) { return f.users, nil }
+func (f fakeAPI) CreateUser(context.Context, string, string, string, string) (api.User, error) {
+	return api.User{ID: "u2", Username: "new-user", Role: "member"}, nil
 }
 func (f fakeAPI) Logout(context.Context, string) error { return nil }
 
@@ -46,7 +51,7 @@ func TestRestoreSessionCommands(t *testing.T) {
 		want  any
 	}{
 		{name: "no session opens home", store: fakeStore{err: credentials.ErrNotFound}, want: loginRequiredMsg{}},
-		{name: "saved session opens dashboard", store: fakeStore{token: "saved"}, want: sessionRestoredMsg{}},
+		{name: "saved session opens authenticated menu", store: fakeStore{token: "saved"}, want: sessionRestoredMsg{}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -153,19 +158,58 @@ func TestLoginFormKeepsTypedValueAcrossModelCopies(t *testing.T) {
 	}
 }
 
-func TestDashboardViewRendersUsefulEmptyState(t *testing.T) {
+func TestAdminMenuShowsUsersAndKeepsFutureItemsDisabled(t *testing.T) {
 	t.Parallel()
 	model := New(fakeAPI{}, fakeStore{}, BuildInfo{Version: "v0.1.0"})
-	model.screen = dashboardScreen
+	model.screen = appMenuScreen
 	model.loading = false
-	model.width = 120
+	model.width = 100
 	model.height = 40
 	model.user = api.User{Username: "bluff", Role: "admin"}
+	model.connected = true
 
 	view := model.View().Content
-	for _, phrase := range []string{"Standings", "No players yet", "The table is clear", "No hands in the book", "v0.1.0", "////"} {
+	for _, phrase := range []string{"@bluff", "ADMIN", "Users", "Tables  soon", "Games  soon", "Game formats  soon", "My info  soon", "Log out"} {
 		if !strings.Contains(view, phrase) {
-			t.Errorf("dashboard does not contain %q", phrase)
+			t.Errorf("authenticated menu does not contain %q", phrase)
+		}
+	}
+	if strings.Contains(view, "Players") {
+		t.Fatal("authenticated menu still exposes Players")
+	}
+}
+
+func TestMemberMenuDoesNotShowUsers(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+	model.screen, model.loading = appMenuScreen, false
+	model.width, model.height = 100, 40
+	model.user = api.User{Username: "guest", Role: "member"}
+
+	if strings.Contains(model.View().Content, "Users") {
+		t.Fatal("member menu exposes admin-only Users")
+	}
+}
+
+func TestUsersViewPinsHelpToTerminalBottom(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+	model.screen, model.loading = usersScreen, false
+	model.width, model.height = 100, 32
+	model.user = api.User{Username: "bluff", Role: "admin"}
+	model.connected = true
+	model.users = []api.User{{Username: "bluff", Role: "admin"}, {Username: "dealer", Role: "member"}}
+
+	lines := strings.Split(model.View().Content, "\n")
+	if len(lines) != model.height {
+		t.Fatalf("rendered lines = %d, want %d", len(lines), model.height)
+	}
+	if !strings.Contains(lines[len(lines)-1], "mouse click") {
+		t.Fatalf("bottom line = %q, want pinned help", lines[len(lines)-1])
+	}
+	for _, phrase := range []string{"Users", "@bluff", "c  Create user", "@dealer", "MEMBER"} {
+		if !strings.Contains(model.View().Content, phrase) {
+			t.Errorf("users screen does not contain %q", phrase)
 		}
 	}
 }

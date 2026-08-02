@@ -47,6 +47,17 @@ type dashboardMouseMsg struct {
 	activate bool
 }
 
+type appMenuMouseMsg struct {
+	index    int
+	activate bool
+}
+
+type usersMouseMsg struct {
+	action    string
+	userIndex int
+	activate  bool
+}
+
 type hitRegion struct {
 	x0, x1 int
 	y0, y1 int
@@ -142,6 +153,157 @@ func (m Model) aboutView() string {
 		mutedStyle.Render("enter or esc back"),
 	)
 	return place(m.width, m.height, body)
+}
+
+func (m Model) appMenuView() string {
+	items := m.appMenuItems()
+	rows := make([]string, 0, len(items))
+	for index, item := range items {
+		style := valueStyle
+		label := item.title
+		if !item.enabled {
+			style = mutedStyle
+			label += "  soon"
+		} else if index == m.appIndex {
+			style = lipgloss.NewStyle().Bold(true).Foreground(colorFuchsia)
+			label = "› " + label + " ‹"
+		}
+		rows = append(rows, style.Width(homeMenuWidth).Align(lipgloss.Center).Render(label))
+	}
+
+	parts := []string{
+		brandLogo(m.width), "", "",
+		mutedStyle.Render("Private games. One honest ledger."), "",
+		m.identityLine(),
+		connectionLine(m.connected, false, ""), "",
+		brandStyle.Render("What would you like to do?"), "",
+		lipgloss.JoinVertical(lipgloss.Center, rows...),
+	}
+	if m.err != nil {
+		parts = append(parts, "", errorStyle.Render("! "+friendlyError(m.err)))
+	}
+	body := lipgloss.NewStyle().Width(m.homeWidth()).Align(lipgloss.Center).
+		Render(lipgloss.JoinVertical(lipgloss.Center, parts...))
+	footer := mutedStyle.Render("↑↓ move   enter select   mouse click   q quit")
+	return pinnedView(m.width, m.height, body, footer)
+}
+
+func (m Model) usersView() string {
+	if m.loading {
+		return pinnedView(m.width, m.height, m.loadingViewBody(), usersFooter())
+	}
+	width := min(max(m.width-4, 44), 82)
+	parts := []string{
+		m.authenticatedHeader("Users", width),
+		"",
+		shortcutBar(width),
+		"",
+		m.userList(width),
+	}
+	if m.notice != "" {
+		parts = append(parts, "", lipgloss.NewStyle().Foreground(colorGreen).Render("✓ "+m.notice))
+	}
+	if m.err != nil {
+		parts = append(parts, "", errorStyle.Render("! "+friendlyError(m.err)))
+	}
+	body := lipgloss.NewStyle().Width(width).Align(lipgloss.Center).
+		Render(lipgloss.JoinVertical(lipgloss.Center, parts...))
+	return pinnedView(m.width, m.height, body, usersFooter())
+}
+
+func (m Model) createUserView() string {
+	if m.loading {
+		return pinnedView(m.width, m.height, m.loadingViewBody(), mutedStyle.Render("esc back"))
+	}
+	width := min(max(m.width-4, 44), 72)
+	parts := []string{m.authenticatedHeader("Create user", width), ""}
+	if m.err != nil {
+		parts = append(parts, errorStyle.Render("! "+friendlyError(m.err)), "")
+	}
+	parts = append(parts, m.form.View())
+	body := lipgloss.NewStyle().Width(width).Align(lipgloss.Center).
+		Render(lipgloss.JoinVertical(lipgloss.Center, parts...))
+	return pinnedView(m.width, m.height, body, mutedStyle.Render("tab next   enter continue   esc back"))
+}
+
+func (m Model) authenticatedHeader(title string, width int) string {
+	return lipgloss.JoinVertical(lipgloss.Center,
+		sectionHeading(title, width),
+		"",
+		m.identityLine(),
+		connectionLine(m.connected, false, ""),
+	)
+}
+
+func (m Model) identityLine() string {
+	return valueStyle.Render("@"+m.user.Username) + "  " +
+		lipgloss.NewStyle().Bold(true).Foreground(colorFuchsia).Render(strings.ToUpper(m.user.Role))
+}
+
+func (m Model) userList(width int) string {
+	if len(m.users) == 0 {
+		return lipgloss.JoinVertical(lipgloss.Center,
+			valueStyle.Render("No users yet"),
+			mutedStyle.Render("Press c to create the first account."),
+		)
+	}
+	usernameWidth := max(width-25, 16)
+	lines := []string{mutedStyle.Render(fmt.Sprintf("%-4s %-*s %s", "", usernameWidth, "USERNAME", "ROLE"))}
+	for index, user := range m.users {
+		marker := "  "
+		style := valueStyle
+		if index == m.usersIndex {
+			marker = "› "
+			style = lipgloss.NewStyle().Bold(true).Foreground(colorFuchsia)
+		}
+		role := strings.ToUpper(user.Role)
+		line := fmt.Sprintf("%-4s %-*s %s", marker, usernameWidth, "@"+truncate(user.Username, usernameWidth-1), role)
+		lines = append(lines, style.Render(line))
+	}
+	lines = append(lines, "", mutedStyle.Render(fmt.Sprintf("%d users", len(m.users))))
+	return strings.Join(lines, "\n")
+}
+
+func shortcutBar(width int) string {
+	create := lipgloss.NewStyle().Foreground(colorFuchsia).Render("c  Create user")
+	refresh := mutedStyle.Render("r  Refresh")
+	back := mutedStyle.Render("esc  Back")
+	available := max(width-2-lipgloss.Width(create)-lipgloss.Width(refresh)-lipgloss.Width(back), 4)
+	leftGap := available / 4
+	firstGap := available / 4
+	secondGap := available / 4
+	rightGap := available - leftGap - firstGap - secondGap
+	content := strings.Repeat(" ", leftGap) + create + strings.Repeat(" ", firstGap) +
+		refresh + strings.Repeat(" ", secondGap) + back + strings.Repeat(" ", rightGap)
+	return lipgloss.NewStyle().Width(width - 2).BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(colorMuted).Render(content)
+}
+
+func usersFooter() string {
+	return mutedStyle.Render("↑↓ move   c create   r refresh   esc back   mouse click")
+}
+
+func (m Model) loadingViewBody() string {
+	return lipgloss.JoinVertical(lipgloss.Center,
+		m.authenticatedHeader(screenTitle(m.screen), min(max(m.width-4, 44), 82)),
+		"", m.spinner.View()+"  "+valueStyle.Render(m.status),
+	)
+}
+
+func screenTitle(value screen) string {
+	if value == createUserScreen {
+		return "Create user"
+	}
+	return "Users"
+}
+
+func pinnedView(width, height int, content, footer string) string {
+	if width <= 0 || height <= 1 {
+		return content + "\n" + footer
+	}
+	body := lipgloss.Place(width, height-1, lipgloss.Center, lipgloss.Center, content)
+	bottom := lipgloss.NewStyle().Width(width).Align(lipgloss.Center).Render(footer)
+	return body + "\n" + bottom
 }
 
 func (m Model) dashboardView() string {
@@ -313,6 +475,24 @@ func (m Model) mouseHandler() func(tea.MouseMsg) tea.Cmd {
 					return func() tea.Msg { return menuMouseMsg{index: index, activate: activate} }
 				}
 			}
+		case appMenuScreen:
+			for index, region := range m.appMenuHitRegions() {
+				if inRegion(mouse.X, mouse.Y, region) {
+					return func() tea.Msg { return appMenuMouseMsg{index: index, activate: activate} }
+				}
+			}
+		case usersScreen:
+			for _, region := range m.usersHitRegions() {
+				if inRegion(mouse.X, mouse.Y, region) {
+					userIndex := -1
+					if strings.HasPrefix(region.value, "user:") {
+						_, _ = fmt.Sscanf(region.value, "user:%d", &userIndex)
+					}
+					return func() tea.Msg {
+						return usersMouseMsg{action: region.value, userIndex: userIndex, activate: activate}
+					}
+				}
+			}
 		case dashboardScreen:
 			for _, region := range m.dashboardHitRegions() {
 				if inRegion(mouse.X, mouse.Y, region) {
@@ -335,6 +515,60 @@ func (m Model) homeHitRegions() []hitRegion {
 	regions := make([]hitRegion, homeItemCount)
 	for index := range regions {
 		regions[index] = hitRegion{x0: x, x1: x + homeMenuWidth, y0: y + index, y1: y + index, value: fmt.Sprint(index)}
+	}
+	return regions
+}
+
+func (m Model) appMenuHitRegions() []hitRegion {
+	items := m.appMenuItems()
+	if len(items) == 0 {
+		return nil
+	}
+	partsBeforeMenu := []string{
+		brandLogo(m.width), "", "",
+		mutedStyle.Render("Private games. One honest ledger."), "",
+		m.identityLine(), connectionLine(m.connected, false, ""), "",
+		brandStyle.Render("What would you like to do?"), "",
+	}
+	prefixHeight := lipgloss.Height(lipgloss.JoinVertical(lipgloss.Center, partsBeforeMenu...))
+	bodyHeight := prefixHeight + len(items)
+	if m.err != nil {
+		bodyHeight += 2
+	}
+	x := max((m.width-homeMenuWidth)/2, 0)
+	y := max((m.height-1-bodyHeight)/2, 0) + prefixHeight
+	regions := make([]hitRegion, len(items))
+	for index := range items {
+		regions[index] = hitRegion{x0: x, x1: x + homeMenuWidth, y0: y + index, y1: y + index, value: string(items[index].action)}
+	}
+	return regions
+}
+
+func (m Model) usersHitRegions() []hitRegion {
+	if m.loading {
+		return nil
+	}
+	width := min(max(m.width-4, 44), 82)
+	listHeight := 2
+	if len(m.users) > 0 {
+		listHeight = len(m.users) + 3
+	}
+	bodyHeight := lipgloss.Height(m.authenticatedHeader("Users", width)) + 1 + lipgloss.Height(shortcutBar(width)) + 1 + listHeight
+	if m.notice != "" || m.err != nil {
+		bodyHeight += 2
+	}
+	x := max((m.width-width)/2, 0)
+	y := max((m.height-1-bodyHeight)/2, 0)
+	shortcutY := y + lipgloss.Height(m.authenticatedHeader("Users", width)) + 1
+	shortcutHeight := lipgloss.Height(shortcutBar(width))
+	regions := []hitRegion{
+		{x0: x, x1: x + width*40/100, y0: shortcutY, y1: shortcutY + shortcutHeight - 1, value: "create"},
+		{x0: x + width*40/100 + 1, x1: x + width*70/100, y0: shortcutY, y1: shortcutY + shortcutHeight - 1, value: "refresh"},
+		{x0: x + width*70/100 + 1, x1: x + width, y0: shortcutY, y1: shortcutY + shortcutHeight - 1, value: "back"},
+	}
+	listY := shortcutY + shortcutHeight + 1
+	for index := range m.users {
+		regions = append(regions, hitRegion{x0: x, x1: x + width, y0: listY + 1 + index, y1: listY + 1 + index, value: fmt.Sprintf("user:%d", index)})
 	}
 	return regions
 }

@@ -100,6 +100,26 @@ func (c *Client) Me(ctx context.Context, token string) (User, error) {
 	return result.User, err
 }
 
+// Users returns every active Bluff account. The service restricts this to administrators.
+func (c *Client) Users(ctx context.Context, token string) ([]User, error) {
+	result, err := request[struct {
+		Users []User `json:"users"`
+	}](ctx, c, http.MethodGet, "/v1/auth/users", token, nil)
+	return result.Users, err
+}
+
+// CreateUser creates a Bluff account. The service restricts this to administrators.
+func (c *Client) CreateUser(ctx context.Context, token, username, password, role string) (User, error) {
+	result, err := request[struct {
+		User User `json:"user"`
+	}](ctx, c, http.MethodPost, "/v1/auth/users", token, map[string]string{
+		"username": username,
+		"password": password,
+		"role":     role,
+	})
+	return result.User, err
+}
+
 // Bootstrap returns the complete dashboard state.
 func (c *Client) Bootstrap(ctx context.Context, token string) (Bootstrap, error) {
 	return request[Bootstrap](ctx, c, http.MethodGet, "/v1/bootstrap", token, nil)

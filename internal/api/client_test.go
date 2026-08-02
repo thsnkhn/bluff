@@ -87,3 +87,60 @@ func TestBootstrapAuthenticatesAndReturnsProblem(t *testing.T) {
 		t.Fatalf("error %q does not include request ID", err)
 	}
 }
+
+func TestUsersListsAccounts(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/auth/users" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer admin-token" {
+			t.Errorf("Authorization = %q", got)
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"data":{"users":[{"id":"u1","username":"bluff","role":"admin"}]}}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, server.Client())
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	users, err := client.Users(context.Background(), "admin-token")
+	if err != nil {
+		t.Fatalf("Users: %v", err)
+	}
+	if len(users) != 1 || users[0].Username != "bluff" {
+		t.Fatalf("users = %#v", users)
+	}
+}
+
+func TestCreateUserSendsAccountDetails(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/auth/users" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body["username"] != "dealer" || body["password"] != "long-table-password" || body["role"] != "member" {
+			t.Errorf("unexpected account: %#v", body)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"ok":true,"data":{"user":{"id":"u2","username":"dealer","role":"member"}}}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, server.Client())
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	user, err := client.CreateUser(context.Background(), "admin-token", "dealer", "long-table-password", "member")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if user.Username != "dealer" || user.Role != "member" {
+		t.Fatalf("user = %#v", user)
+	}
+}
