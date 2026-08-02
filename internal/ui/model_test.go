@@ -222,6 +222,28 @@ func TestSharedHelpBarIsPinnedAcrossScreens(t *testing.T) {
 	}
 }
 
+func TestAboutViewUsesProductCopy(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{}, fakeStore{}, BuildInfo{Version: "v0.1.0"})
+	model.screen, model.loading = aboutScreen, false
+	model.width, model.height = 110, 36
+
+	view := model.View().Content
+	for _, phrase := range []string{
+		"Track games. Settle balances. Keep the table honest.",
+		"Fast, accessible, and easy for everyone at the table.",
+		"Made with love by ",
+		"@thsnkhn",
+	} {
+		if !strings.Contains(view, phrase) {
+			t.Errorf("about view does not contain %q", phrase)
+		}
+	}
+	if strings.Contains(view, "keychain") {
+		t.Fatal("about view still mentions implementation details")
+	}
+}
+
 func TestLoginOmitsTaglineAndPinsFormHelp(t *testing.T) {
 	t.Parallel()
 	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})

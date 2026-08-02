@@ -135,8 +135,10 @@ func (m Model) aboutView() string {
 		brandLogo(m.width),
 		"",
 		"",
-		valueStyle.Render("A shared bankroll for your poker table."),
-		mutedStyle.Render("Credentials stay in your system keychain."),
+		valueStyle.Render("Track games. Settle balances. Keep the table honest."),
+		mutedStyle.Render("Fast, accessible, and easy for everyone at the table."),
+		"",
+		mutedStyle.Render("Made with love by ")+lipgloss.NewStyle().Foreground(colorFuchsia).Render("@thsnkhn"),
 		"",
 		brandStyle.Render(version),
 	)
