@@ -9,9 +9,19 @@ import (
 )
 
 const (
-	homeContentWidth = 48
+	homeContentWidth = 76
 	homeMenuWidth    = 32
 )
+
+const blockLogo = ` ▒▒▒          ▒▒▒                  ▒▒▒▒▒    ▒▒▒▒▒▒
+▒▒▒▒         ▒▒▒▒                ▒▒▒   ▒  ▒▒▒▒  ▒▒
+▒▒▒▒         ▒▒▒▒               ▒▒▒▒      ▒▒▒▒
+▒▒▒▒▒▒▒▒▒▒▒  ▒▒▒▒ ▒▒▒▒   ▒▒▒▒ ▒▒▒▒▒▒▒▒▒ ▒▒▒▒▒▒▒▒▒
+▒▒▒▒   ▒▒▒▒▒ ▒▒▒▒ ▒▒▒▒   ▒▒▒▒   ▒▒▒▒      ▒▒▒▒
+▒▒▒▒    ▒▒▒▒ ▒▒▒▒ ▒▒▒▒   ▒▒▒▒   ▒▒▒▒      ▒▒▒▒
+▒▒▒▒    ▒▒▒▒ ▒▒▒▒ ▒▒▒▒   ▒▒▒▒   ▒▒▒▒      ▒▒▒▒
+▒▒▒▒    ▒▒▒  ▒▒▒▒ ▒▒▒▒   ▒▒▒▒   ▒▒▒▒      ▒▒▒▒
+ ▒▒▒▒▒▒▒▒    ▒▒▒▒  ▒▒▒▒▒▒▒▒▒▒   ▒▒▒▒      ▒▒▒▒`
 
 var (
 	colorIndigo  = lipgloss.Color("#7571F9")
@@ -45,7 +55,7 @@ type hitRegion struct {
 
 func (m Model) loadingView() string {
 	line := lipgloss.JoinHorizontal(lipgloss.Center, m.spinner.View(), "  ", valueStyle.Render(m.status))
-	body := lipgloss.JoinVertical(lipgloss.Center, suitArt(), "", brandWordmark(), "", line)
+	body := lipgloss.JoinVertical(lipgloss.Center, brandLogo(m.width), "", line)
 	return place(m.width, m.height, body)
 }
 
@@ -77,14 +87,12 @@ func (m Model) homeView() string {
 		parts = append(parts, "", errorStyle.Render("! "+friendlyError(m.err)))
 	}
 	body := lipgloss.JoinVertical(lipgloss.Center, parts...)
-	return place(m.width, m.height, lipgloss.NewStyle().Width(homeContentWidth).Align(lipgloss.Center).Render(body))
+	return place(m.width, m.height, lipgloss.NewStyle().Width(m.homeWidth()).Align(lipgloss.Center).Render(body))
 }
 
 func (m Model) homePrefix() string {
 	return lipgloss.JoinVertical(lipgloss.Center,
-		suitArt(),
-		"",
-		brandWordmark(),
+		brandLogo(m.width),
 		mutedStyle.Render("Private games. One honest ledger."),
 		"",
 		connectionLine(m.connected, m.checkingConnection, m.spinner.View()),
@@ -99,9 +107,9 @@ func (m Model) loginView() string {
 		return m.loadingView()
 	}
 	parts := []string{
-		suitArt(),
+		brandLogo(m.width),
 		"",
-		brandWordmark(),
+		"",
 		mutedStyle.Render("Sign in to take your seat"),
 		"",
 	}
@@ -119,9 +127,7 @@ func (m Model) aboutView() string {
 		version = "dev"
 	}
 	body := lipgloss.JoinVertical(lipgloss.Center,
-		suitArt(),
-		"",
-		brandWordmark(),
+		brandLogo(m.width),
 		mutedStyle.Render("Private games. One honest ledger."),
 		"",
 		valueStyle.Render("A shared bankroll for your poker table."),
@@ -243,17 +249,11 @@ func (m Model) footerView(width int) string {
 	return actions + strings.Repeat(" ", gap) + mutedStyle.Render(version)
 }
 
-func suitArt() string {
-	red := lipgloss.NewStyle().Bold(true).Foreground(colorFuchsia)
-	black := lipgloss.NewStyle().Bold(true).Foreground(colorIndigo)
-	return lipgloss.JoinHorizontal(lipgloss.Center,
-		red.Render("♦"), "   ", black.Render("♣"), "   ",
-		red.Render("♠"), "   ", black.Render("♥"),
-	)
-}
-
-func brandWordmark() string {
-	return brandStyle.Render("B  L  U  F  F")
+func brandLogo(width int) string {
+	if width > 0 && width < lipgloss.Width(blockLogo)+4 {
+		return brandStyle.Render("▓▓  B L U F F  ▓▓")
+	}
+	return brandStyle.Render(blockLogo)
 }
 
 func connectionLine(connected, checking bool, spinnerView string) string {
@@ -311,6 +311,13 @@ func (m Model) homeHitRegions() []hitRegion {
 		regions[index] = hitRegion{x0: x, x1: x + homeMenuWidth, y0: y + index, y1: y + index, value: fmt.Sprint(index)}
 	}
 	return regions
+}
+
+func (m Model) homeWidth() int {
+	if m.width <= 0 {
+		return homeContentWidth
+	}
+	return min(homeContentWidth, max(m.width-2, homeMenuWidth))
 }
 
 func (m Model) dashboardHitRegions() []hitRegion {

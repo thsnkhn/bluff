@@ -113,9 +113,14 @@ func TestHomeViewUsesCompactCenteredMenu(t *testing.T) {
 	model.width, model.height = 100, 36
 
 	view := model.View().Content
-	for _, phrase := range []string{"♦", "♣", "♠", "♥", "Sign in", "Check connection", "About Bluff", "Quit"} {
+	for _, phrase := range []string{"▒▒▒▒▒▒▒▒▒", "Sign in", "Check connection", "About Bluff", "Quit"} {
 		if !strings.Contains(view, phrase) {
 			t.Errorf("home does not contain %q", phrase)
+		}
+	}
+	for _, oldMark := range []string{"♦", "♣", "♠", "♥"} {
+		if strings.Contains(view, oldMark) {
+			t.Errorf("home still contains old suit mark %q", oldMark)
 		}
 	}
 	for _, description := range []string{"Open your private table", "Verify the Bluff service", "Version and product details", "Leave the table"} {
