@@ -10,7 +10,7 @@ Final result: passed
 
 ## Implementation captures
 
-- Launch menu: `/Users/tahseen/.codex/visualizations/2026/08/02/019fc1d5-a5b3-7d82-80da-fdfcef6823ec/bluff-tui/home-block-logo.png`
+- Launch menu: `/Users/tahseen/.codex/visualizations/2026/08/02/019fc1d5-a5b3-7d82-80da-fdfcef6823ec/bluff-tui/home-gradient-logo.png`
 - Centered login: `/Users/tahseen/.codex/visualizations/2026/08/02/019fc1d5-a5b3-7d82-80da-fdfcef6823ec/bluff-tui/login.png`
 - Dashboard: `/Users/tahseen/.codex/visualizations/2026/08/02/019fc1d5-a5b3-7d82-80da-fdfcef6823ec/bluff-tui/dashboard.png`
 
@@ -19,7 +19,7 @@ Final result: passed
 - Natural terminal background is preserved; no full-screen color fill remains.
 - The launch composition is centered, menu descriptions are removed, and focus remains visually clear.
 - The login flow is centered and uses Huh's native Charm theme.
-- The supplied filled `BLUFF` block artwork is used as the primary terminal logo, with a compact fallback for narrow terminals.
+- The supplied filled `BLUFF` block artwork uses a violet-to-fuchsia line gradient, clear tagline spacing, and a compact fallback for narrow terminals.
 - Dashboard headings use the requested violet title and slash rule.
 - Loading operations use the Bubbles spinner.
 - Keyboard and mouse share the same launch-menu focus; dashboard actions are clickable.

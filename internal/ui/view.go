@@ -93,6 +93,8 @@ func (m Model) homeView() string {
 func (m Model) homePrefix() string {
 	return lipgloss.JoinVertical(lipgloss.Center,
 		brandLogo(m.width),
+		"",
+		"",
 		mutedStyle.Render("Private games. One honest ledger."),
 		"",
 		connectionLine(m.connected, m.checkingConnection, m.spinner.View()),
@@ -128,6 +130,8 @@ func (m Model) aboutView() string {
 	}
 	body := lipgloss.JoinVertical(lipgloss.Center,
 		brandLogo(m.width),
+		"",
+		"",
 		mutedStyle.Render("Private games. One honest ledger."),
 		"",
 		valueStyle.Render("A shared bankroll for your poker table."),
@@ -253,7 +257,23 @@ func brandLogo(width int) string {
 	if width > 0 && width < lipgloss.Width(blockLogo)+4 {
 		return brandStyle.Render("▓▓  B L U F F  ▓▓")
 	}
-	return brandStyle.Render(blockLogo)
+	return gradientLogo(blockLogo)
+}
+
+func gradientLogo(logo string) string {
+	lines := strings.Split(logo, "\n")
+	start := [3]int{247, 128, 226}
+	end := [3]int{117, 113, 249}
+	last := max(len(lines)-1, 1)
+	for index, line := range lines {
+		color := lipgloss.Color(fmt.Sprintf("#%02X%02X%02X",
+			start[0]+(end[0]-start[0])*index/last,
+			start[1]+(end[1]-start[1])*index/last,
+			start[2]+(end[2]-start[2])*index/last,
+		))
+		lines[index] = lipgloss.NewStyle().Bold(true).Foreground(color).Render(line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func connectionLine(connected, checking bool, spinnerView string) string {
