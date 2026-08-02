@@ -8,7 +8,10 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-const homeContentWidth = 64
+const (
+	homeContentWidth = 48
+	homeMenuWidth    = 32
+)
 
 var (
 	colorIndigo  = lipgloss.Color("#7571F9")
@@ -47,7 +50,38 @@ func (m Model) loadingView() string {
 }
 
 func (m Model) homeView() string {
-	prefix := lipgloss.JoinVertical(lipgloss.Left,
+	prefix := m.homePrefix()
+	items := []string{"Sign in", "Check connection", "About Bluff", "Quit"}
+	rows := make([]string, 0, len(items))
+	for index, title := range items {
+		selected := index == m.homeIndex
+		if selected {
+			rows = append(rows, lipgloss.NewStyle().
+				Width(homeMenuWidth).
+				Align(lipgloss.Center).
+				Bold(true).
+				Foreground(colorFuchsia).
+				Render("› "+title+" ‹"))
+			continue
+		}
+		rows = append(rows, lipgloss.NewStyle().Width(homeMenuWidth).Align(lipgloss.Center).Foreground(colorCream).Render(title))
+	}
+
+	parts := []string{
+		prefix,
+		lipgloss.JoinVertical(lipgloss.Center, rows...),
+		"",
+		mutedStyle.Render("↑↓ move   enter select   mouse click   q quit"),
+	}
+	if m.err != nil {
+		parts = append(parts, "", errorStyle.Render("! "+friendlyError(m.err)))
+	}
+	body := lipgloss.JoinVertical(lipgloss.Center, parts...)
+	return place(m.width, m.height, lipgloss.NewStyle().Width(homeContentWidth).Align(lipgloss.Center).Render(body))
+}
+
+func (m Model) homePrefix() string {
+	return lipgloss.JoinVertical(lipgloss.Center,
 		suitArt(),
 		"",
 		brandWordmark(),
@@ -58,37 +92,6 @@ func (m Model) homeView() string {
 		brandStyle.Render("What would you like to do?"),
 		"",
 	)
-
-	items := []struct{ title, detail string }{
-		{"Sign in", "Open your private table"},
-		{"Check connection", "Verify the Bluff service"},
-		{"About Bluff", "Version and product details"},
-		{"Quit", "Leave the table"},
-	}
-	rows := make([]string, 0, len(items))
-	for index, item := range items {
-		selected := index == m.homeIndex
-		if selected {
-			background := lipgloss.Color("#1D1B3A")
-			selector := lipgloss.NewStyle().Foreground(colorFuchsia).Background(background).Render("› ")
-			title := lipgloss.NewStyle().Bold(true).Foreground(colorIndigo).Background(background).Render(item.title)
-			gap := max(homeContentWidth-len("› ")-len(item.title)-len(item.detail), 2)
-			space := lipgloss.NewStyle().Background(background).Render(strings.Repeat(" ", gap))
-			detail := lipgloss.NewStyle().Foreground(colorMuted).Background(background).Render(item.detail)
-			rows = append(rows, selector+title+space+detail)
-			continue
-		}
-		left := "  " + valueStyle.Render(item.title)
-		gap := max(homeContentWidth-lipgloss.Width(left)-len(item.detail), 2)
-		rows = append(rows, left+strings.Repeat(" ", gap)+mutedStyle.Render(item.detail))
-	}
-
-	body := prefix + "\n" + strings.Join(rows, "\n") + "\n\n" +
-		mutedStyle.Render("↑↓ move   enter select   mouse click   q quit")
-	if m.err != nil {
-		body += "\n\n" + errorStyle.Render("! "+friendlyError(m.err))
-	}
-	return place(m.width, m.height, lipgloss.NewStyle().Width(homeContentWidth).Render(body))
 }
 
 func (m Model) loginView() string {
@@ -243,37 +246,9 @@ func (m Model) footerView(width int) string {
 func suitArt() string {
 	red := lipgloss.NewStyle().Bold(true).Foreground(colorFuchsia)
 	black := lipgloss.NewStyle().Bold(true).Foreground(colorIndigo)
-	diamond := strings.Join([]string{
-		"   /\\   ",
-		"  /  \\  ",
-		" <    > ",
-		"  \\  /  ",
-		"   \\/   ",
-	}, "\n")
-	club := strings.Join([]string{
-		"   ()   ",
-		" ()  () ",
-		"   ()   ",
-		"   /\\   ",
-		"  /__\\  ",
-	}, "\n")
-	spade := strings.Join([]string{
-		"   /\\   ",
-		"  /  \\  ",
-		" (    ) ",
-		"  \\()/  ",
-		"  /__\\  ",
-	}, "\n")
-	heart := strings.Join([]string{
-		" ()  () ",
-		"(      )",
-		" \\    / ",
-		"  \\  /  ",
-		"   \\/   ",
-	}, "\n")
 	return lipgloss.JoinHorizontal(lipgloss.Center,
-		red.Render(diamond), "  ", black.Render(club), "  ",
-		red.Render(spade), "  ", black.Render(heart),
+		red.Render("♦"), "   ", black.Render("♣"), "   ",
+		red.Render("♠"), "   ", black.Render("♥"),
 	)
 }
 
@@ -324,20 +299,16 @@ func (m Model) mouseHandler() func(tea.MouseMsg) tea.Cmd {
 }
 
 func (m Model) homeHitRegions() []hitRegion {
-	prefix := lipgloss.JoinVertical(lipgloss.Left,
-		suitArt(), "", brandWordmark(), mutedStyle.Render("Private games. One honest ledger."), "",
-		connectionLine(m.connected, m.checkingConnection, m.spinner.View()), "",
-		brandStyle.Render("What would you like to do?"), "",
-	)
-	bodyHeight := lipgloss.Height(prefix) + homeItemCount + 2 + 1
+	prefix := m.homePrefix()
+	bodyHeight := lipgloss.Height(prefix) + homeItemCount + 2
 	if m.err != nil {
 		bodyHeight += 2
 	}
-	x := max((m.width-homeContentWidth)/2, 0)
+	x := max((m.width-homeMenuWidth)/2, 0)
 	y := max((m.height-bodyHeight)/2, 0) + lipgloss.Height(prefix)
 	regions := make([]hitRegion, homeItemCount)
 	for index := range regions {
-		regions[index] = hitRegion{x0: x, x1: x + homeContentWidth, y0: y + index, y1: y + index, value: fmt.Sprint(index)}
+		regions[index] = hitRegion{x0: x, x1: x + homeMenuWidth, y0: y + index, y1: y + index, value: fmt.Sprint(index)}
 	}
 	return regions
 }

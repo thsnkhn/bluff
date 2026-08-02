@@ -105,6 +105,26 @@ func TestHomeMouseHoverAndClick(t *testing.T) {
 	}
 }
 
+func TestHomeViewUsesCompactCenteredMenu(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+	model.screen = homeScreen
+	model.loading = false
+	model.width, model.height = 100, 36
+
+	view := model.View().Content
+	for _, phrase := range []string{"♦", "♣", "♠", "♥", "Sign in", "Check connection", "About Bluff", "Quit"} {
+		if !strings.Contains(view, phrase) {
+			t.Errorf("home does not contain %q", phrase)
+		}
+	}
+	for _, description := range []string{"Open your private table", "Verify the Bluff service", "Version and product details", "Leave the table"} {
+		if strings.Contains(view, description) {
+			t.Errorf("home still contains menu description %q", description)
+		}
+	}
+}
+
 func TestLoginFormKeepsTypedValueAcrossModelCopies(t *testing.T) {
 	t.Parallel()
 	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})

@@ -10,16 +10,16 @@ Final result: passed
 
 ## Implementation captures
 
-- Launch menu: `/Users/tahseen/.codex/visualizations/2026/08/02/019fc1d5-a5b3-7d82-80da-fdfcef6823ec/bluff-tui/home.png`
+- Launch menu: `/Users/tahseen/.codex/visualizations/2026/08/02/019fc1d5-a5b3-7d82-80da-fdfcef6823ec/bluff-tui/home-centered.png`
 - Centered login: `/Users/tahseen/.codex/visualizations/2026/08/02/019fc1d5-a5b3-7d82-80da-fdfcef6823ec/bluff-tui/login.png`
 - Dashboard: `/Users/tahseen/.codex/visualizations/2026/08/02/019fc1d5-a5b3-7d82-80da-fdfcef6823ec/bluff-tui/dashboard.png`
 
 ## Checks
 
 - Natural terminal background is preserved; no full-screen color fill remains.
-- The launch hierarchy, connection state, menu descriptions, and selected-row treatment match the chosen direction.
+- The launch composition is centered, menu descriptions are removed, and focus remains visually clear.
 - The login flow is centered and uses Huh's native Charm theme.
-- The supplied suit reference is represented as responsive terminal-native character art.
+- The supplied suit reference is represented as a compact row of filled terminal-native suit marks.
 - Dashboard headings use the requested violet title and slash rule.
 - Loading operations use the Bubbles spinner.
 - Keyboard and mouse share the same launch-menu focus; dashboard actions are clickable.
