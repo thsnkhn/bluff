@@ -17,6 +17,7 @@ type fakeAPI struct {
 	bootstrap api.Bootstrap
 }
 
+func (f fakeAPI) Health(context.Context) error { return nil }
 func (f fakeAPI) Login(context.Context, string, string) (api.Session, error) {
 	return api.Session{}, errors.New("not implemented")
 }
@@ -44,7 +45,7 @@ func TestRestoreSessionCommands(t *testing.T) {
 		store fakeStore
 		want  any
 	}{
-		{name: "no session opens login", store: fakeStore{err: credentials.ErrNotFound}, want: loginRequiredMsg{}},
+		{name: "no session opens home", store: fakeStore{err: credentials.ErrNotFound}, want: loginRequiredMsg{}},
 		{name: "saved session opens dashboard", store: fakeStore{token: "saved"}, want: sessionRestoredMsg{}},
 	}
 	for _, tt := range tests {
@@ -64,6 +65,43 @@ func TestRestoreSessionCommands(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestHomeNavigationWraps(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+	model.screen = homeScreen
+	model.loading = false
+
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
+	got := updated.(Model)
+	if got.homeIndex != homeQuit {
+		t.Fatalf("selected item = %d, want quit", got.homeIndex)
+	}
+}
+
+func TestHomeMouseHoverAndClick(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+	model.screen = homeScreen
+	model.loading = false
+	model.width, model.height = 100, 40
+	region := model.homeHitRegions()[homeAbout]
+
+	updated, _ := model.Update(menuMouseMsg{index: homeAbout})
+	hovered := updated.(Model)
+	if hovered.homeIndex != homeAbout {
+		t.Fatalf("hovered item = %d, want about", hovered.homeIndex)
+	}
+	if !inRegion(region.x0, region.y0, region) {
+		t.Fatal("expected generated mouse region to contain its origin")
+	}
+
+	updated, _ = hovered.Update(menuMouseMsg{index: homeAbout, activate: true})
+	clicked := updated.(Model)
+	if clicked.screen != aboutScreen {
+		t.Fatalf("screen = %v, want about", clicked.screen)
 	}
 }
 
@@ -100,7 +138,7 @@ func TestDashboardViewRendersUsefulEmptyState(t *testing.T) {
 	model.user = api.User{Username: "bluff", Role: "admin"}
 
 	view := model.View().Content
-	for _, phrase := range []string{"STANDINGS", "No players yet", "The table is clear", "No hands in the book", "v0.1.0"} {
+	for _, phrase := range []string{"Standings", "No players yet", "The table is clear", "No hands in the book", "v0.1.0", "////"} {
 		if !strings.Contains(view, phrase) {
 			t.Errorf("dashboard does not contain %q", phrase)
 		}

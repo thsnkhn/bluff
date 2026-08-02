@@ -27,6 +27,20 @@ type Client struct {
 	http    HTTPClient
 }
 
+// Health verifies that the Bluff service is reachable.
+func (c *Client) Health(ctx context.Context) error {
+	result, err := request[struct {
+		Status string `json:"status"`
+	}](ctx, c, http.MethodGet, "/health", "", nil)
+	if err != nil {
+		return err
+	}
+	if result.Status != "ok" {
+		return fmt.Errorf("bluff service reported status %q", result.Status)
+	}
+	return nil
+}
+
 // Error is a problem returned by the Bluff API.
 type Error struct {
 	Status    int
@@ -55,7 +69,9 @@ func NewClient(rawBaseURL string, httpClient HTTPClient) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse base URL: %w", err)
 	}
-	if parsed.Host == "" || (parsed.Scheme != "https" && !(parsed.Scheme == "http" && isLoopback(parsed.Hostname()))) {
+	secureRemote := parsed.Scheme == "https"
+	localDevelopment := parsed.Scheme == "http" && isLoopback(parsed.Hostname())
+	if parsed.Host == "" || (!secureRemote && !localDevelopment) {
 		return nil, errors.New("API URL must use HTTPS, except for localhost development")
 	}
 	if httpClient == nil {
@@ -137,7 +153,7 @@ func request[T any](ctx context.Context, client *Client, method, path, token str
 	if err != nil {
 		return zero, fmt.Errorf("contact Bluff: %w", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 
 	decoded := envelope[T]{}
 	limited := io.LimitReader(response.Body, maxResponseBytes)
