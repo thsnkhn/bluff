@@ -26,15 +26,17 @@ const (
 	bootScreen screen = iota
 	homeScreen
 	loginScreen
+	inviteCodeScreen
+	inviteAccountScreen
 	aboutScreen
 	appMenuScreen
 	usersScreen
-	createUserScreen
 	dashboardScreen
 )
 
 const (
 	homeSignIn = iota
+	homeHaveInvite
 	homeCheckConnection
 	homeAbout
 	homeQuit
@@ -51,10 +53,10 @@ type loginValues struct {
 	password string
 }
 
-type createUserValues struct {
+type inviteValues struct {
+	code     string
 	username string
 	password string
-	role     string
 }
 
 type appAction string
@@ -79,10 +81,12 @@ type appMenuItem struct {
 type API interface {
 	Health(context.Context) error
 	Login(context.Context, string, string) (api.Session, error)
+	ValidateInvitation(context.Context, string) error
+	RedeemInvitation(context.Context, string, string, string) (api.Session, error)
 	Me(context.Context, string) (api.User, error)
 	Bootstrap(context.Context, string) (api.Bootstrap, error)
 	Users(context.Context, string) ([]api.User, error)
-	CreateUser(context.Context, string, string, string, string) (api.User, error)
+	CreateInvitation(context.Context, string) (api.Invitation, error)
 	Logout(context.Context, string) error
 }
 
@@ -104,7 +108,7 @@ type Model struct {
 	spinner            spinner.Model
 	form               *huh.Form
 	login              *loginValues
-	createUser         *createUserValues
+	invite             *inviteValues
 	loading            bool
 	status             string
 	err                error
@@ -114,6 +118,7 @@ type Model struct {
 	homeIndex          int
 	appIndex           int
 	usersIndex         int
+	usersActionHover   string
 	users              []api.User
 	notice             string
 	connected          bool
@@ -174,11 +179,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		if m.screen == loginScreen && !m.loading && key == "esc" {
+		if (m.screen == loginScreen || m.screen == inviteCodeScreen) && !m.loading && key == "esc" {
+			previous := m.screen
 			m.screen, m.err = homeScreen, nil
-			m.resetLoginForm()
+			if previous == loginScreen {
+				m.resetLoginForm()
+			} else {
+				m.resetInviteCodeForm()
+			}
 			m.resizeForm()
 			return m, nil
+		}
+		if m.screen == inviteAccountScreen && !m.loading && key == "esc" {
+			m.screen, m.err = inviteCodeScreen, nil
+			m.resetInviteCodeForm()
+			m.resizeForm()
+			return m, m.form.Init()
 		}
 		if m.screen == appMenuScreen && !m.loading {
 			switch key {
@@ -197,26 +213,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.screen == usersScreen && !m.loading {
 			switch key {
 			case "up", "k":
+				m.usersActionHover = ""
 				m.moveUsers(-1)
 				return m, nil
 			case "down", "j":
+				m.usersActionHover = ""
 				m.moveUsers(1)
 				return m, nil
 			case "c":
-				return m.openCreateUser()
+				m.usersActionHover = ""
+				m.loading, m.status, m.err, m.notice = true, "Creating invite code", nil, ""
+				return m, tea.Batch(m.spinner.Tick, m.createInvitationCmd())
 			case "r":
+				m.usersActionHover = ""
 				m.loading, m.status, m.err, m.notice = true, "Refreshing users", nil, ""
 				return m, tea.Batch(m.spinner.Tick, m.loadUsersCmd())
 			case "esc", "backspace":
+				m.usersActionHover = ""
 				m.screen, m.err, m.notice = appMenuScreen, nil, ""
 				return m, nil
 			}
-		}
-		if m.screen == createUserScreen && !m.loading && key == "esc" {
-			m.screen, m.err = usersScreen, nil
-			m.resetCreateUserForm()
-			m.resizeForm()
-			return m, nil
 		}
 		if m.screen == dashboardScreen && !m.loading {
 			switch key {
@@ -257,15 +273,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.userIndex >= 0 && msg.userIndex < len(m.users) {
+			m.usersActionHover = ""
 			m.usersIndex = msg.userIndex
 			return m, nil
 		}
+		m.usersActionHover = msg.action
 		if !msg.activate {
 			return m, nil
 		}
+		m.usersActionHover = ""
 		switch msg.action {
 		case "create":
-			return m.openCreateUser()
+			m.loading, m.status, m.err, m.notice = true, "Creating invite code", nil, ""
+			return m, tea.Batch(m.spinner.Tick, m.createInvitationCmd())
 		case "refresh":
 			m.loading, m.status, m.err, m.notice = true, "Refreshing users", nil, ""
 			return m, tea.Batch(m.spinner.Tick, m.loadUsersCmd())
@@ -310,7 +330,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.screen, m.err, m.connected = appMenuScreen, nil, true
 		m.appIndex = m.firstEnabledAppIndex()
 		m.login.password = ""
+		if m.invite != nil {
+			m.invite.password = ""
+		}
 		return m, nil
+	case invitationValidatedMsg:
+		m.loading, m.screen, m.err = false, inviteAccountScreen, nil
+		m.resetInviteAccountForm()
+		m.resizeForm()
+		return m, m.form.Init()
 	case operationFailedMsg:
 		m.loading, m.err = false, msg.err
 		if m.screen == loginScreen {
@@ -319,9 +347,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.resizeForm()
 			return m, m.form.Init()
 		}
-		if m.screen == createUserScreen {
-			m.createUser.password = ""
-			m.resetCreateUserForm()
+		if m.screen == inviteCodeScreen {
+			m.resetInviteCodeForm()
+			m.resizeForm()
+			return m, m.form.Init()
+		}
+		if m.screen == inviteAccountScreen {
+			m.invite.password = ""
+			m.resetInviteAccountForm()
 			m.resizeForm()
 			return m, m.form.Init()
 		}
@@ -337,16 +370,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.usersIndex = len(m.users) - 1
 		}
 		return m, nil
-	case userCreatedMsg:
-		m.loading, m.users, m.err = false, msg.users, nil
-		m.screen, m.notice = usersScreen, "@"+msg.user.Username+" was added"
-		for index, user := range m.users {
-			if user.ID == msg.user.ID {
-				m.usersIndex = index
-				break
-			}
-		}
-		m.resetCreateUserForm()
+	case invitationCreatedMsg:
+		m.loading, m.err = false, nil
+		m.screen, m.notice = usersScreen, "Invite code  "+msg.invitation.Code+"  ·  share it once"
 		return m, nil
 	case loggedOutMsg:
 		m.loading, m.token, m.user, m.bootstrap = false, "", api.User{}, api.Bootstrap{}
@@ -362,22 +388,46 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	if (m.screen == loginScreen || m.screen == createUserScreen) && !m.loading {
-		updated, cmd := m.form.Update(msg)
+	if (m.screen == loginScreen || m.screen == inviteCodeScreen || m.screen == inviteAccountScreen) && !m.loading {
+		formMsg := msg
+		if m.screen == inviteCodeScreen {
+			switch typed := msg.(type) {
+			case tea.KeyPressMsg:
+				typed.Text = strings.ToUpper(typed.Text)
+				formMsg = typed
+			case tea.PasteMsg:
+				typed.Content = strings.ToUpper(typed.Content)
+				formMsg = typed
+			}
+		}
+		updated, cmd := m.form.Update(formMsg)
 		if form, ok := updated.(*huh.Form); ok {
 			m.form = form
 		}
+		if m.screen == inviteCodeScreen {
+			normalized := strings.ToUpper(m.invite.code)
+			if normalized != m.invite.code {
+				m.invite.code = normalized
+				m.resetInviteCodeForm()
+				m.resizeForm()
+				return m, m.form.Init()
+			}
+		}
 		if m.form.State == huh.StateCompleted {
-			if m.screen == createUserScreen {
-				m.loading, m.status, m.err = true, "Creating user", nil
-				return m, tea.Batch(m.spinner.Tick, m.createUserCmd())
+			if m.screen == inviteCodeScreen {
+				m.loading, m.status, m.err = true, "Checking invite code", nil
+				return m, tea.Batch(m.spinner.Tick, m.validateInvitationCmd())
+			}
+			if m.screen == inviteAccountScreen {
+				m.loading, m.status, m.err = true, "Creating your account", nil
+				return m, tea.Batch(m.spinner.Tick, m.redeemInvitationCmd())
 			}
 			m.loading, m.status, m.err = true, "Taking your seat", nil
 			return m, tea.Batch(m.spinner.Tick, m.loginCmd(m.login.username, m.login.password))
 		}
 		if m.form.State == huh.StateAborted {
-			if m.screen == createUserScreen {
-				m.screen = usersScreen
+			if m.screen == inviteAccountScreen {
+				m.screen = inviteCodeScreen
 			} else {
 				m.screen = homeScreen
 			}
@@ -399,14 +449,16 @@ func (m Model) View() tea.View {
 		content = m.homeView()
 	case loginScreen:
 		content = m.loginView()
+	case inviteCodeScreen:
+		content = m.inviteCodeView()
+	case inviteAccountScreen:
+		content = m.inviteAccountView()
 	case aboutScreen:
 		content = m.aboutView()
 	case appMenuScreen:
 		content = m.appMenuView()
 	case usersScreen:
 		content = m.usersView()
-	case createUserScreen:
-		content = m.createUserView()
 	case dashboardScreen:
 		content = m.dashboardView()
 	}
@@ -425,31 +477,45 @@ func (m *Model) resetLoginForm() {
 	}
 	m.login = &loginValues{username: username}
 	m.form = huh.NewForm(huh.NewGroup(
-		huh.NewInput().Title("Username").Description("Your table username").Value(&m.login.username).
-			Placeholder("bluff").Validate(required("Enter your username")),
-		huh.NewInput().Title("Password").Description("Your password is never stored").Value(&m.login.password).
-			EchoMode(huh.EchoModePassword).Validate(required("Enter your password")),
-	)).WithTheme(huh.ThemeFunc(huh.ThemeCharm)).WithShowHelp(true)
+		newCenteredInput("Username", "", "bluff", &m.login.username, 32, false,
+			required("Enter your username")),
+		newCenteredInput("Password", "", "••••••••", &m.login.password, 128, true,
+			required("Enter your password")),
+	)).WithTheme(huh.ThemeFunc(centeredFormTheme)).WithShowHelp(false).WithShowErrors(false)
 }
 
-func (m *Model) resetCreateUserForm() {
-	role := "member"
-	username := ""
-	if m.createUser != nil {
-		username = m.createUser.username
-		if m.createUser.role != "" {
-			role = m.createUser.role
-		}
+func (m *Model) resetInviteCodeForm() {
+	code := ""
+	if m.invite != nil {
+		code = m.invite.code
 	}
-	m.createUser = &createUserValues{username: username, role: role}
+	m.invite = &inviteValues{code: code}
 	m.form = huh.NewForm(huh.NewGroup(
-		huh.NewInput().Title("Username").Description("3-32 letters, numbers, dots, dashes, or underscores").Value(&m.createUser.username).
-			Placeholder("table-friend").Validate(required("Enter a username")),
-		huh.NewInput().Title("Password").Description("At least 12 characters").Value(&m.createUser.password).
-			EchoMode(huh.EchoModePassword).Validate(required("Enter a password")),
-		huh.NewSelect[string]().Title("Role").Description("Members can sign in; admins can manage users").
-			Options(huh.NewOption("Member", "member"), huh.NewOption("Admin", "admin")).Value(&m.createUser.role),
-	)).WithTheme(huh.ThemeFunc(huh.ThemeCharm)).WithShowHelp(true)
+		newCenteredInput("Invite code", "", "A1B2C3", &m.invite.code, 6, false,
+			inviteCode),
+	)).WithTheme(huh.ThemeFunc(centeredFormTheme)).WithShowHelp(false).WithShowErrors(false)
+}
+
+func (m *Model) resetInviteAccountForm() {
+	code, username := m.invite.code, m.invite.username
+	m.invite = &inviteValues{code: code, username: username}
+	m.form = huh.NewForm(huh.NewGroup(
+		newCenteredInput("Username", "", "table-friend",
+			&m.invite.username, 32, false, required("Enter a username")),
+		newCenteredInput("Password", "", "••••••••", &m.invite.password, 128, true, validPassword),
+	)).WithTheme(huh.ThemeFunc(centeredFormTheme)).WithShowHelp(false).WithShowErrors(false)
+}
+
+func centeredFormTheme(isDark bool) *huh.Styles {
+	styles := huh.ThemeCharm(isDark)
+	center := func(field *huh.FieldStyles) {
+		field.Base = field.Base.BorderLeft(false).BorderBottom(true).PaddingLeft(0).Align(lipgloss.Center)
+	}
+	center(&styles.Focused)
+	center(&styles.Blurred)
+	styles.Form.Base = styles.Form.Base.Align(lipgloss.Center)
+	styles.Group.Base = styles.Group.Base.Align(lipgloss.Center)
+	return styles
 }
 
 func (m *Model) resizeForm() {
@@ -458,10 +524,33 @@ func (m *Model) resizeForm() {
 	}
 	width := min(max(m.width-16, 32), 54)
 	height := 16
-	if m.screen == createUserScreen {
-		height = 24
+	if m.screen == inviteAccountScreen {
+		height = 18
 	}
 	m.form.WithWidth(width).WithHeight(min(max(m.height-18, 8), height))
+}
+
+func inviteCode(value string) error {
+	if len(value) != 6 {
+		return errors.New("enter all 6 characters")
+	}
+	for _, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') {
+			continue
+		}
+		return errors.New("use letters and numbers only")
+	}
+	return nil
+}
+
+func validPassword(value string) error {
+	if len(value) < 8 {
+		return errors.New("use at least 8 characters")
+	}
+	if len(value) > 128 {
+		return errors.New("use no more than 128 characters")
+	}
+	return nil
 }
 
 func required(message string) func(string) error {
@@ -485,13 +574,11 @@ type loginRequiredMsg struct {
 }
 type connectionCheckedMsg struct{ err error }
 type loginSucceededMsg sessionRestoredMsg
+type invitationValidatedMsg struct{}
 type operationFailedMsg struct{ err error }
 type refreshedMsg struct{ bootstrap api.Bootstrap }
 type usersLoadedMsg struct{ users []api.User }
-type userCreatedMsg struct {
-	user  api.User
-	users []api.User
-}
+type invitationCreatedMsg struct{ invitation api.Invitation }
 type loggedOutMsg struct{ err error }
 
 func (m Model) restoreSessionCmd() tea.Cmd {
@@ -537,6 +624,11 @@ func (m Model) activateHomeItem() (tea.Model, tea.Cmd) {
 		m.resetLoginForm()
 		m.resizeForm()
 		return m, m.form.Init()
+	case homeHaveInvite:
+		m.screen, m.err = inviteCodeScreen, nil
+		m.resetInviteCodeForm()
+		m.resizeForm()
+		return m, m.form.Init()
 	case homeCheckConnection:
 		m.loading, m.checkingConnection, m.status, m.err = true, true, "Checking the connection", nil
 		return m, tea.Batch(m.spinner.Tick, m.checkConnectionCmd())
@@ -555,6 +647,40 @@ func (m Model) loginCmd(username, password string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), operationTimeout)
 		defer cancel()
 		session, err := m.api.Login(ctx, username, password)
+		if err != nil {
+			return operationFailedMsg{err: err}
+		}
+		if err := m.store.Save(ctx, session.Token); err != nil {
+			_ = m.api.Logout(ctx, session.Token)
+			return operationFailedMsg{err: fmt.Errorf("could not save the session securely: %w", err)}
+		}
+		bootstrap, err := m.api.Bootstrap(ctx, session.Token)
+		if err != nil {
+			_ = m.store.Delete(ctx)
+			return operationFailedMsg{err: err}
+		}
+		return loginSucceededMsg{token: session.Token, user: session.User, bootstrap: bootstrap}
+	}
+}
+
+func (m Model) validateInvitationCmd() tea.Cmd {
+	code := m.invite.code
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), operationTimeout)
+		defer cancel()
+		if err := m.api.ValidateInvitation(ctx, code); err != nil {
+			return operationFailedMsg{err: err}
+		}
+		return invitationValidatedMsg{}
+	}
+}
+
+func (m Model) redeemInvitationCmd() tea.Cmd {
+	code, username, password := m.invite.code, m.invite.username, m.invite.password
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), operationTimeout)
+		defer cancel()
+		session, err := m.api.RedeemInvitation(ctx, code, username, password)
 		if err != nil {
 			return operationFailedMsg{err: err}
 		}
@@ -595,20 +721,15 @@ func (m Model) loadUsersCmd() tea.Cmd {
 	}
 }
 
-func (m Model) createUserCmd() tea.Cmd {
-	username, password, role := m.createUser.username, m.createUser.password, m.createUser.role
+func (m Model) createInvitationCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), operationTimeout)
 		defer cancel()
-		user, err := m.api.CreateUser(ctx, m.token, username, password, role)
+		invitation, err := m.api.CreateInvitation(ctx, m.token)
 		if err != nil {
 			return operationFailedMsg{err: err}
 		}
-		users, err := m.api.Users(ctx, m.token)
-		if err != nil {
-			return operationFailedMsg{err: err}
-		}
-		return userCreatedMsg{user: user, users: users}
+		return invitationCreatedMsg{invitation: invitation}
 	}
 }
 
@@ -677,13 +798,6 @@ func (m *Model) moveUsers(direction int) {
 		return
 	}
 	m.usersIndex = (m.usersIndex + direction + len(m.users)) % len(m.users)
-}
-
-func (m Model) openCreateUser() (tea.Model, tea.Cmd) {
-	m.screen, m.err, m.notice = createUserScreen, nil, ""
-	m.resetCreateUserForm()
-	m.resizeForm()
-	return m, m.form.Init()
 }
 
 func (m Model) logoutCmd() tea.Cmd {

@@ -114,21 +114,17 @@ func TestUsersListsAccounts(t *testing.T) {
 	}
 }
 
-func TestCreateUserSendsAccountDetails(t *testing.T) {
+func TestCreateInvitationUsesAuthenticatedEndpoint(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/v1/auth/users" {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/auth/invitations" {
 			t.Errorf("request = %s %s", r.Method, r.URL.Path)
 		}
-		var body map[string]string
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode body: %v", err)
-		}
-		if body["username"] != "dealer" || body["password"] != "long-table-password" || body["role"] != "member" {
-			t.Errorf("unexpected account: %#v", body)
+		if got := r.Header.Get("Authorization"); got != "Bearer admin-token" {
+			t.Errorf("Authorization = %q", got)
 		}
 		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"ok":true,"data":{"user":{"id":"u2","username":"dealer","role":"member"}}}`))
+		_, _ = w.Write([]byte(`{"ok":true,"data":{"invitation":{"code":"A1B2C3","createdAt":"2026-08-02T00:00:00Z"}}}`))
 	}))
 	defer server.Close()
 
@@ -136,11 +132,48 @@ func TestCreateUserSendsAccountDetails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	user, err := client.CreateUser(context.Background(), "admin-token", "dealer", "long-table-password", "member")
+	invitation, err := client.CreateInvitation(context.Background(), "admin-token")
 	if err != nil {
-		t.Fatalf("CreateUser: %v", err)
+		t.Fatalf("CreateInvitation: %v", err)
 	}
-	if user.Username != "dealer" || user.Role != "member" {
-		t.Fatalf("user = %#v", user)
+	if invitation.Code != "A1B2C3" {
+		t.Fatalf("invitation = %#v", invitation)
+	}
+}
+
+func TestInvitationOnboardingEndpoints(t *testing.T) {
+	t.Parallel()
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		switch requests {
+		case 1:
+			if r.URL.Path != "/v1/auth/invitations/validate" {
+				t.Errorf("validate path = %q", r.URL.Path)
+			}
+			_, _ = w.Write([]byte(`{"ok":true,"data":{"valid":true}}`))
+		case 2:
+			if r.URL.Path != "/v1/auth/invitations/redeem" {
+				t.Errorf("redeem path = %q", r.URL.Path)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"ok":true,"data":{"user":{"id":"u2","username":"dealer","role":"member"},"token":"secret","expiresAt":"2026-09-01T00:00:00Z"}}`))
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, server.Client())
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if err := client.ValidateInvitation(context.Background(), "A1B2C3"); err != nil {
+		t.Fatalf("ValidateInvitation: %v", err)
+	}
+	session, err := client.RedeemInvitation(context.Background(), "A1B2C3", "dealer", "dealpass")
+	if err != nil {
+		t.Fatalf("RedeemInvitation: %v", err)
+	}
+	if session.User.Username != "dealer" || session.Token != "secret" {
+		t.Fatalf("session = %#v", session)
 	}
 }

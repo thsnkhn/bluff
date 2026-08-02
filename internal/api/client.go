@@ -92,6 +92,21 @@ func (c *Client) Login(ctx context.Context, username, password string) (Session,
 	})
 }
 
+// ValidateInvitation verifies a code before account details are requested.
+func (c *Client) ValidateInvitation(ctx context.Context, code string) error {
+	_, err := request[struct {
+		Valid bool `json:"valid"`
+	}](ctx, c, http.MethodPost, "/v1/auth/invitations/validate", "", map[string]string{"code": code})
+	return err
+}
+
+// RedeemInvitation creates a member account and returns its authenticated session.
+func (c *Client) RedeemInvitation(ctx context.Context, code, username, password string) (Session, error) {
+	return request[Session](ctx, c, http.MethodPost, "/v1/auth/invitations/redeem", "", map[string]string{
+		"code": code, "username": username, "password": password,
+	})
+}
+
 // Me returns the account attached to a session token.
 func (c *Client) Me(ctx context.Context, token string) (User, error) {
 	result, err := request[struct {
@@ -108,16 +123,12 @@ func (c *Client) Users(ctx context.Context, token string) ([]User, error) {
 	return result.Users, err
 }
 
-// CreateUser creates a Bluff account. The service restricts this to administrators.
-func (c *Client) CreateUser(ctx context.Context, token, username, password, role string) (User, error) {
+// CreateInvitation creates a single-use invite. The service restricts this to administrators.
+func (c *Client) CreateInvitation(ctx context.Context, token string) (Invitation, error) {
 	result, err := request[struct {
-		User User `json:"user"`
-	}](ctx, c, http.MethodPost, "/v1/auth/users", token, map[string]string{
-		"username": username,
-		"password": password,
-		"role":     role,
-	})
-	return result.User, err
+		Invitation Invitation `json:"invitation"`
+	}](ctx, c, http.MethodPost, "/v1/auth/invitations", token, struct{}{})
+	return result.Invitation, err
 }
 
 // Bootstrap returns the complete dashboard state.

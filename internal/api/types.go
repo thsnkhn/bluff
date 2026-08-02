@@ -14,6 +14,12 @@ type Session struct {
 	ExpiresAt string `json:"expiresAt"`
 }
 
+// Invitation is a single-use code created by an administrator.
+type Invitation struct {
+	Code      string `json:"code"`
+	CreatedAt string `json:"createdAt"`
+}
+
 // Player is a member represented in the game ledger.
 type Player struct {
 	ID       string `json:"id"`

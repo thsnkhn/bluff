@@ -72,7 +72,7 @@ func (m Model) loadingView() string {
 
 func (m Model) homeView() string {
 	prefix := m.homePrefix()
-	items := []string{"Sign in", "Check connection", "About Bluff", "Quit"}
+	items := []string{"Sign in", "Have an invite code?", "Check connection", "About Bluff", "Quit"}
 	rows := make([]string, 0, len(items))
 	for index, title := range items {
 		selected := index == m.homeIndex
@@ -124,6 +124,37 @@ func (m Model) loginView() string {
 	parts = append(parts, m.form.View())
 	body := lipgloss.JoinVertical(lipgloss.Center, parts...)
 	return m.screenView(body, "tab next   enter continue   esc back")
+}
+
+func (m Model) inviteCodeView() string {
+	if m.loading {
+		return m.loadingView()
+	}
+	parts := []string{brandLogo(m.width), "", "", brandStyle.Render("Join the table"), ""}
+	if m.err != nil {
+		parts = append(parts, errorStyle.Render("! "+friendlyError(m.err)), "")
+	}
+	parts = append(parts, m.form.View())
+	body := lipgloss.JoinVertical(lipgloss.Center, parts...)
+	return m.screenView(body, "enter continue   esc back")
+}
+
+func (m Model) inviteAccountView() string {
+	if m.loading {
+		return m.loadingView()
+	}
+	parts := []string{
+		brandLogo(m.width), "", "",
+		brandStyle.Render("Choose your login"),
+		mutedStyle.Render("Invite ") + valueStyle.Render(strings.ToUpper(m.invite.code)),
+		"",
+	}
+	if m.err != nil {
+		parts = append(parts, errorStyle.Render("! "+friendlyError(m.err)), "")
+	}
+	parts = append(parts, m.form.View())
+	body := lipgloss.JoinVertical(lipgloss.Center, parts...)
+	return m.screenView(body, "tab next   enter create account   esc back")
 }
 
 func (m Model) aboutView() string {
@@ -179,15 +210,16 @@ func (m Model) appMenuView() string {
 
 func (m Model) usersView() string {
 	if m.loading {
-		return m.screenView(m.loadingViewBody(), usersFooter())
+		return m.pageView(m.loadingViewBody(), usersFooter())
 	}
-	width := min(max(m.width-4, 44), 82)
+	pageWidth := max(m.width-4, 44)
+	contentWidth := min(pageWidth, 96)
 	parts := []string{
-		m.authenticatedHeader("Users", width),
+		pageHeader(pageWidth, "users"),
 		"",
-		shortcutBar(width),
+		actionBar(usersActionBarItems(), m.usersActionHover),
 		"",
-		m.userList(width),
+		m.userList(contentWidth),
 	}
 	if m.notice != "" {
 		parts = append(parts, "", lipgloss.NewStyle().Foreground(colorGreen).Render("✓ "+m.notice))
@@ -195,32 +227,19 @@ func (m Model) usersView() string {
 	if m.err != nil {
 		parts = append(parts, "", errorStyle.Render("! "+friendlyError(m.err)))
 	}
-	body := lipgloss.NewStyle().Width(width).Align(lipgloss.Center).
-		Render(lipgloss.JoinVertical(lipgloss.Center, parts...))
-	return m.screenView(body, usersFooter())
+	body := lipgloss.NewStyle().Width(pageWidth).Render(strings.Join(parts, "\n"))
+	return m.pageView(body, usersFooter())
 }
 
-func (m Model) createUserView() string {
-	if m.loading {
-		return m.screenView(m.loadingViewBody(), "esc back")
+func pageHeader(width int, breadcrumbs ...string) string {
+	trail := ""
+	if len(breadcrumbs) > 0 {
+		trail = mutedStyle.Render(" / ") + valueStyle.Render(strings.Join(breadcrumbs, " / "))
 	}
-	width := min(max(m.width-4, 44), 72)
-	parts := []string{m.authenticatedHeader("Create user", width), ""}
-	if m.err != nil {
-		parts = append(parts, errorStyle.Render("! "+friendlyError(m.err)), "")
-	}
-	parts = append(parts, m.form.View())
-	body := lipgloss.NewStyle().Width(width).Align(lipgloss.Center).
-		Render(lipgloss.JoinVertical(lipgloss.Center, parts...))
-	return m.screenView(body, "tab next   enter continue   esc back")
-}
-
-func (m Model) authenticatedHeader(title string, width int) string {
-	return lipgloss.JoinVertical(lipgloss.Center,
-		sectionHeading(title, width),
-		"",
-		m.identityLine(),
-	)
+	left := lipgloss.NewStyle().Bold(true).Foreground(colorFuchsia).Render("~bluff") + trail
+	ruleWidth := max(width-lipgloss.Width(left)-1, 4)
+	rule := lipgloss.NewStyle().Foreground(colorIndigo).Render(strings.Repeat("/", ruleWidth))
+	return left + " " + rule
 }
 
 func (m Model) identityLine() string {
@@ -232,7 +251,7 @@ func (m Model) userList(width int) string {
 	if len(m.users) == 0 {
 		return lipgloss.JoinVertical(lipgloss.Center,
 			valueStyle.Render("No users yet"),
-			mutedStyle.Render("Press c to create the first account."),
+			mutedStyle.Render("Create an invite code to welcome someone."),
 		)
 	}
 	usernameWidth := max(width-25, 16)
@@ -252,37 +271,16 @@ func (m Model) userList(width int) string {
 	return strings.Join(lines, "\n")
 }
 
-func shortcutBar(width int) string {
-	create := lipgloss.NewStyle().Foreground(colorFuchsia).Render("c  Create user")
-	refresh := mutedStyle.Render("r  Refresh")
-	back := mutedStyle.Render("esc  Back")
-	available := max(width-2-lipgloss.Width(create)-lipgloss.Width(refresh)-lipgloss.Width(back), 4)
-	leftGap := available / 4
-	firstGap := available / 4
-	secondGap := available / 4
-	rightGap := available - leftGap - firstGap - secondGap
-	content := strings.Repeat(" ", leftGap) + create + strings.Repeat(" ", firstGap) +
-		refresh + strings.Repeat(" ", secondGap) + back + strings.Repeat(" ", rightGap)
-	return lipgloss.NewStyle().Width(width - 2).BorderStyle(lipgloss.NormalBorder()).
-		BorderForeground(colorMuted).Render(content)
-}
-
 func usersFooter() string {
-	return "↑↓ move   c create   r refresh   esc back   mouse click"
+	return "↑↓ move   c invite   r refresh   esc back   mouse click"
 }
 
 func (m Model) loadingViewBody() string {
-	return lipgloss.JoinVertical(lipgloss.Center,
-		m.authenticatedHeader(screenTitle(m.screen), min(max(m.width-4, 44), 82)),
+	width := max(m.width-4, 44)
+	return lipgloss.JoinVertical(lipgloss.Left,
+		pageHeader(width, "users"),
 		"", m.spinner.View()+"  "+valueStyle.Render(m.status),
 	)
-}
-
-func screenTitle(value screen) string {
-	if value == createUserScreen {
-		return "Create user"
-	}
-	return "Users"
 }
 
 func pinnedView(width, height int, content, footer string) string {
@@ -298,15 +296,29 @@ func (m Model) screenView(content, actions string) string {
 	return pinnedView(m.width, m.height, content, m.helpBar(actions))
 }
 
+func (m Model) pageView(content, actions string) string {
+	return pinnedTopView(m.width, m.height, content, m.helpBar(actions))
+}
+
+func pinnedTopView(width, height int, content, footer string) string {
+	if width <= 0 || height <= 1 {
+		return content + "\n" + footer
+	}
+	main := lipgloss.NewStyle().MarginTop(1).MarginLeft(2).Render(content)
+	body := lipgloss.Place(width, height-1, lipgloss.Left, lipgloss.Top, main)
+	bottom := lipgloss.NewStyle().Width(width).Align(lipgloss.Center).Render(footer)
+	return body + "\n" + bottom
+}
+
 func (m Model) helpBar(actions string) string {
-	connection := connectionLine(m.connected, m.checkingConnection, m.spinner.View())
+	connection := m.footerIdentity(connectionLine(m.connected, m.checkingConnection, m.spinner.View()))
 	styledActions := mutedStyle.Render(actions)
 	available := max(m.width-2, 1)
 	gap := available - lipgloss.Width(connection) - lipgloss.Width(styledActions)
 	if gap >= 3 {
 		return lipgloss.NewStyle().Width(available).Render(connection + strings.Repeat(" ", gap) + styledActions)
 	}
-	compactConnection := compactConnectionLine(m.connected, m.checkingConnection, m.spinner.View())
+	compactConnection := m.footerIdentity(compactConnectionLine(m.connected, m.checkingConnection, m.spinner.View()))
 	gap = available - lipgloss.Width(compactConnection) - lipgloss.Width(styledActions)
 	if gap < 2 {
 		remaining := available - lipgloss.Width(compactConnection) - 2
@@ -318,9 +330,17 @@ func (m Model) helpBar(actions string) string {
 	return compactConnection + strings.Repeat(" ", gap) + styledActions
 }
 
+func (m Model) footerIdentity(connection string) string {
+	if m.user.Username == "" {
+		return connection
+	}
+	separator := mutedStyle.Render("  ·  ")
+	return connection + separator + m.identityLine()
+}
+
 func (m Model) dashboardView() string {
-	innerWidth := max(m.width-6, 36)
-	header := m.headerView(innerWidth)
+	innerWidth := max(m.width-4, 36)
+	header := pageHeader(innerWidth, "dashboard")
 
 	var body string
 	if innerWidth >= 100 {
@@ -337,20 +357,13 @@ func (m Model) dashboardView() string {
 		)
 	}
 
-	mainParts := []string{header, "", body}
+	stats := mutedStyle.Render(fmt.Sprintf("%d players  ·  %d games", len(m.bootstrap.Players), len(m.bootstrap.Games)))
+	mainParts := []string{header, stats, "", body}
 	if m.err != nil {
 		mainParts = append(mainParts, "", errorStyle.Render("! "+friendlyError(m.err)))
 	}
-	main := lipgloss.NewStyle().Padding(1, 3).Render(strings.Join(mainParts, "\n"))
-	return m.screenView(main, m.dashboardHelp())
-}
-
-func (m Model) headerView(width int) string {
-	title := sectionHeading("Bluff Bankroll", width)
-	identity := valueStyle.Render("@"+m.user.Username) + "  " +
-		lipgloss.NewStyle().Foreground(colorFuchsia).Render(strings.ToUpper(m.user.Role))
-	stats := mutedStyle.Render(fmt.Sprintf("%d players  ·  %d games", len(m.bootstrap.Players), len(m.bootstrap.Games)))
-	return title + "\n" + identity + "  " + stats
+	main := lipgloss.NewStyle().Width(innerWidth).Render(strings.Join(mainParts, "\n"))
+	return m.pageView(main, m.dashboardHelp())
 }
 
 func (m Model) standingsView(width int) string {
@@ -455,7 +468,7 @@ func connectionLine(connected, checking bool, spinnerView string) string {
 		return spinnerView + " " + mutedStyle.Render("Checking connection")
 	}
 	if connected {
-		return lipgloss.NewStyle().Foreground(colorGreen).Render("● Connected") + mutedStyle.Render("  api.bluff.thsnkhn.com")
+		return lipgloss.NewStyle().Foreground(colorGreen).Render("● Connected")
 	}
 	return errorStyle.Render("● Offline") + mutedStyle.Render("  check your connection")
 }
@@ -509,6 +522,7 @@ func (m Model) mouseHandler() func(tea.MouseMsg) tea.Cmd {
 					}
 				}
 			}
+			return func() tea.Msg { return usersMouseMsg{userIndex: -1} }
 		case dashboardScreen:
 			for _, region := range m.dashboardHitRegions() {
 				if inRegion(mouse.X, mouse.Y, region) {
@@ -563,24 +577,13 @@ func (m Model) usersHitRegions() []hitRegion {
 	if m.loading {
 		return nil
 	}
-	width := min(max(m.width-4, 44), 82)
-	listHeight := 2
-	if len(m.users) > 0 {
-		listHeight = len(m.users) + 3
-	}
-	bodyHeight := lipgloss.Height(m.authenticatedHeader("Users", width)) + 1 + lipgloss.Height(shortcutBar(width)) + 1 + listHeight
-	if m.notice != "" || m.err != nil {
-		bodyHeight += 2
-	}
-	x := max((m.width-width)/2, 0)
-	y := max((m.height-1-bodyHeight)/2, 0)
-	shortcutY := y + lipgloss.Height(m.authenticatedHeader("Users", width)) + 1
-	shortcutHeight := lipgloss.Height(shortcutBar(width))
-	regions := []hitRegion{
-		{x0: x, x1: x + width*40/100, y0: shortcutY, y1: shortcutY + shortcutHeight - 1, value: "create"},
-		{x0: x + width*40/100 + 1, x1: x + width*70/100, y0: shortcutY, y1: shortcutY + shortcutHeight - 1, value: "refresh"},
-		{x0: x + width*70/100 + 1, x1: x + width, y0: shortcutY, y1: shortcutY + shortcutHeight - 1, value: "back"},
-	}
+	pageWidth := max(m.width-4, 44)
+	width := min(pageWidth, 96)
+	x, y := 2, 1
+	shortcutY := y + lipgloss.Height(pageHeader(pageWidth, "users")) + 1
+	items := usersActionBarItems()
+	shortcutHeight := lipgloss.Height(actionBar(items, m.usersActionHover))
+	regions := actionBarHitRegions(x, shortcutY, items)
 	listY := shortcutY + shortcutHeight + 1
 	for index := range m.users {
 		regions = append(regions, hitRegion{x0: x, x1: x + width, y0: listY + 1 + index, y1: listY + 1 + index, value: fmt.Sprintf("user:%d", index)})
