@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
+	"charm.land/huh/v2"
+
 	"github.com/thsnkhn/bluff/internal/api"
 	"github.com/thsnkhn/bluff/internal/credentials"
 )
@@ -61,6 +64,29 @@ func TestRestoreSessionCommands(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestLoginFormKeepsTypedValueAcrossModelCopies(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+	copied := model
+	copied.form.Init()
+
+	for _, character := range "bluff" {
+		updated, _ := copied.form.Update(tea.KeyPressMsg(tea.Key{
+			Code: character,
+			Text: string(character),
+		}))
+		form, ok := updated.(*huh.Form)
+		if !ok {
+			t.Fatalf("form update returned %T", updated)
+		}
+		copied.form = form
+	}
+
+	if copied.login.username != "bluff" {
+		t.Fatalf("submitted username = %q, want %q", copied.login.username, "bluff")
 	}
 }
 

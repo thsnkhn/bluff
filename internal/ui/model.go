@@ -33,6 +33,11 @@ type BuildInfo struct {
 	Version string
 }
 
+type loginValues struct {
+	username string
+	password string
+}
+
 // API captures the authenticated operations used by the terminal client.
 type API interface {
 	Login(context.Context, string, string) (api.Session, error)
@@ -58,8 +63,7 @@ type Model struct {
 	height    int
 	spinner   spinner.Model
 	form      *huh.Form
-	username  string
-	password  string
+	login     *loginValues
 	loading   bool
 	status    string
 	err       error
@@ -131,12 +135,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.token, m.user, m.bootstrap = msg.token, msg.user, msg.bootstrap
 		m.screen, m.err = dashboardScreen, nil
-		m.password = ""
+		m.login.password = ""
 		return m, nil
 	case operationFailedMsg:
 		m.loading, m.err = false, msg.err
 		if m.screen == loginScreen {
-			m.password = ""
+			m.login.password = ""
 			m.resetLoginForm()
 			m.resizeForm()
 			return m, m.form.Init()
@@ -166,7 +170,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.form.State == huh.StateCompleted {
 			m.loading, m.status, m.err = true, "Taking your seat", nil
-			return m, tea.Batch(m.spinner.Tick, m.loginCmd(m.username, m.password))
+			return m, tea.Batch(m.spinner.Tick, m.loginCmd(m.login.username, m.login.password))
 		}
 		if m.form.State == huh.StateAborted {
 			return m, tea.Quit
@@ -195,10 +199,15 @@ func (m Model) View() tea.View {
 }
 
 func (m *Model) resetLoginForm() {
+	username := ""
+	if m.login != nil {
+		username = m.login.username
+	}
+	m.login = &loginValues{username: username}
 	m.form = huh.NewForm(huh.NewGroup(
-		huh.NewInput().Title("Username").Description("Your table username").Value(&m.username).
+		huh.NewInput().Title("Username").Description("Your table username").Value(&m.login.username).
 			Placeholder("bluff").Validate(required("Enter your username")),
-		huh.NewInput().Title("Password").Description("Stored only in your system keychain").Value(&m.password).
+		huh.NewInput().Title("Password").Description("Your password is never stored").Value(&m.login.password).
 			EchoMode(huh.EchoModePassword).Validate(required("Enter your password")),
 	)).WithTheme(huh.ThemeFunc(bluffTheme)).WithShowHelp(true)
 }
