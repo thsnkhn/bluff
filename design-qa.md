@@ -37,3 +37,4 @@ final result: passed
 
 - Pass 1: the shortcut strip used a filled background and visually split at trailing terminal spaces (P2).
 - Pass 2: replaced it with a Lip Gloss bordered shortcut strip and added the user-count summary; comparison passed with only intentional account-domain differences remaining.
+- Pass 3: removed the repeated tagline, replaced the menu prompt with `Choose your next move.`, and moved connection state into one reusable bottom help bar used by every screen.

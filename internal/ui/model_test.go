@@ -177,6 +177,68 @@ func TestAdminMenuShowsUsersAndKeepsFutureItemsDisabled(t *testing.T) {
 	if strings.Contains(view, "Players") {
 		t.Fatal("authenticated menu still exposes Players")
 	}
+	for _, removed := range []string{"Private games. One honest ledger.", "What would you like to do?"} {
+		if strings.Contains(view, removed) {
+			t.Errorf("authenticated menu still contains %q", removed)
+		}
+	}
+	if !strings.Contains(view, "Choose your next move.") {
+		t.Fatal("authenticated menu does not contain the navigation prompt")
+	}
+}
+
+func TestSharedHelpBarIsPinnedAcrossScreens(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		screen screen
+		setup  func(*Model)
+	}{
+		{name: "home", screen: homeScreen},
+		{name: "login", screen: loginScreen},
+		{name: "about", screen: aboutScreen},
+		{name: "authenticated menu", screen: appMenuScreen},
+		{name: "users", screen: usersScreen},
+		{name: "create user", screen: createUserScreen, setup: func(model *Model) { model.resetCreateUserForm() }},
+		{name: "dashboard", screen: dashboardScreen},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+			model.screen, model.loading = tt.screen, false
+			model.width, model.height = 120, 36
+			model.connected = true
+			model.user = api.User{Username: "bluff", Role: "admin"}
+			if tt.setup != nil {
+				tt.setup(&model)
+			}
+			lines := strings.Split(model.View().Content, "\n")
+			bottom := lines[len(lines)-1]
+			if !strings.Contains(bottom, "Connected") {
+				t.Fatalf("bottom help bar = %q, want connection status", bottom)
+			}
+		})
+	}
+}
+
+func TestLoginOmitsTaglineAndPinsFormHelp(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+	model.screen, model.loading = loginScreen, false
+	model.width, model.height = 100, 36
+	model.connected = true
+
+	view := model.View().Content
+	for _, removed := range []string{"Private games. One honest ledger.", "Sign in to take your seat"} {
+		if strings.Contains(view, removed) {
+			t.Errorf("login still contains %q", removed)
+		}
+	}
+	bottom := strings.Split(view, "\n")[model.height-1]
+	if !strings.Contains(bottom, "esc back") {
+		t.Fatalf("bottom help bar = %q, want login help", bottom)
+	}
 }
 
 func TestMemberMenuDoesNotShowUsers(t *testing.T) {

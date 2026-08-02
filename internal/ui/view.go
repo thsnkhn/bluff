@@ -67,7 +67,7 @@ type hitRegion struct {
 func (m Model) loadingView() string {
 	line := lipgloss.JoinHorizontal(lipgloss.Center, m.spinner.View(), "  ", valueStyle.Render(m.status))
 	body := lipgloss.JoinVertical(lipgloss.Center, brandLogo(m.width), "", line)
-	return place(m.width, m.height, body)
+	return m.screenView(body, "please wait")
 }
 
 func (m Model) homeView() string {
@@ -91,14 +91,13 @@ func (m Model) homeView() string {
 	parts := []string{
 		prefix,
 		lipgloss.JoinVertical(lipgloss.Center, rows...),
-		"",
-		mutedStyle.Render("↑↓ move   enter select   mouse click   q quit"),
 	}
 	if m.err != nil {
 		parts = append(parts, "", errorStyle.Render("! "+friendlyError(m.err)))
 	}
 	body := lipgloss.JoinVertical(lipgloss.Center, parts...)
-	return place(m.width, m.height, lipgloss.NewStyle().Width(m.homeWidth()).Align(lipgloss.Center).Render(body))
+	return m.screenView(lipgloss.NewStyle().Width(m.homeWidth()).Align(lipgloss.Center).Render(body),
+		"↑↓ move   enter select   mouse click   q quit")
 }
 
 func (m Model) homePrefix() string {
@@ -106,11 +105,6 @@ func (m Model) homePrefix() string {
 		brandLogo(m.width),
 		"",
 		"",
-		mutedStyle.Render("Private games. One honest ledger."),
-		"",
-		connectionLine(m.connected, m.checkingConnection, m.spinner.View()),
-		"",
-		brandStyle.Render("What would you like to do?"),
 		"",
 	)
 }
@@ -123,15 +117,13 @@ func (m Model) loginView() string {
 		brandLogo(m.width),
 		"",
 		"",
-		mutedStyle.Render("Sign in to take your seat"),
-		"",
 	}
 	if m.err != nil {
 		parts = append(parts, errorStyle.Render("! "+friendlyError(m.err)), "")
 	}
-	parts = append(parts, m.form.View(), "", mutedStyle.Render("esc back"))
+	parts = append(parts, m.form.View())
 	body := lipgloss.JoinVertical(lipgloss.Center, parts...)
-	return place(m.width, m.height, body)
+	return m.screenView(body, "tab next   enter continue   esc back")
 }
 
 func (m Model) aboutView() string {
@@ -143,16 +135,12 @@ func (m Model) aboutView() string {
 		brandLogo(m.width),
 		"",
 		"",
-		mutedStyle.Render("Private games. One honest ledger."),
-		"",
 		valueStyle.Render("A shared bankroll for your poker table."),
 		mutedStyle.Render("Credentials stay in your system keychain."),
 		"",
 		brandStyle.Render(version),
-		"",
-		mutedStyle.Render("enter or esc back"),
 	)
-	return place(m.width, m.height, body)
+	return m.screenView(body, "enter / esc / q back")
 }
 
 func (m Model) appMenuView() string {
@@ -173,10 +161,10 @@ func (m Model) appMenuView() string {
 
 	parts := []string{
 		brandLogo(m.width), "", "",
-		mutedStyle.Render("Private games. One honest ledger."), "",
 		m.identityLine(),
-		connectionLine(m.connected, false, ""), "",
-		brandStyle.Render("What would you like to do?"), "",
+		"",
+		brandStyle.Render("Choose your next move."),
+		"",
 		lipgloss.JoinVertical(lipgloss.Center, rows...),
 	}
 	if m.err != nil {
@@ -184,13 +172,12 @@ func (m Model) appMenuView() string {
 	}
 	body := lipgloss.NewStyle().Width(m.homeWidth()).Align(lipgloss.Center).
 		Render(lipgloss.JoinVertical(lipgloss.Center, parts...))
-	footer := mutedStyle.Render("↑↓ move   enter select   mouse click   q quit")
-	return pinnedView(m.width, m.height, body, footer)
+	return m.screenView(body, "↑↓ move   enter select   mouse click   q quit")
 }
 
 func (m Model) usersView() string {
 	if m.loading {
-		return pinnedView(m.width, m.height, m.loadingViewBody(), usersFooter())
+		return m.screenView(m.loadingViewBody(), usersFooter())
 	}
 	width := min(max(m.width-4, 44), 82)
 	parts := []string{
@@ -208,12 +195,12 @@ func (m Model) usersView() string {
 	}
 	body := lipgloss.NewStyle().Width(width).Align(lipgloss.Center).
 		Render(lipgloss.JoinVertical(lipgloss.Center, parts...))
-	return pinnedView(m.width, m.height, body, usersFooter())
+	return m.screenView(body, usersFooter())
 }
 
 func (m Model) createUserView() string {
 	if m.loading {
-		return pinnedView(m.width, m.height, m.loadingViewBody(), mutedStyle.Render("esc back"))
+		return m.screenView(m.loadingViewBody(), "esc back")
 	}
 	width := min(max(m.width-4, 44), 72)
 	parts := []string{m.authenticatedHeader("Create user", width), ""}
@@ -223,7 +210,7 @@ func (m Model) createUserView() string {
 	parts = append(parts, m.form.View())
 	body := lipgloss.NewStyle().Width(width).Align(lipgloss.Center).
 		Render(lipgloss.JoinVertical(lipgloss.Center, parts...))
-	return pinnedView(m.width, m.height, body, mutedStyle.Render("tab next   enter continue   esc back"))
+	return m.screenView(body, "tab next   enter continue   esc back")
 }
 
 func (m Model) authenticatedHeader(title string, width int) string {
@@ -231,7 +218,6 @@ func (m Model) authenticatedHeader(title string, width int) string {
 		sectionHeading(title, width),
 		"",
 		m.identityLine(),
-		connectionLine(m.connected, false, ""),
 	)
 }
 
@@ -280,7 +266,7 @@ func shortcutBar(width int) string {
 }
 
 func usersFooter() string {
-	return mutedStyle.Render("↑↓ move   c create   r refresh   esc back   mouse click")
+	return "↑↓ move   c create   r refresh   esc back   mouse click"
 }
 
 func (m Model) loadingViewBody() string {
@@ -304,6 +290,30 @@ func pinnedView(width, height int, content, footer string) string {
 	body := lipgloss.Place(width, height-1, lipgloss.Center, lipgloss.Center, content)
 	bottom := lipgloss.NewStyle().Width(width).Align(lipgloss.Center).Render(footer)
 	return body + "\n" + bottom
+}
+
+func (m Model) screenView(content, actions string) string {
+	return pinnedView(m.width, m.height, content, m.helpBar(actions))
+}
+
+func (m Model) helpBar(actions string) string {
+	connection := connectionLine(m.connected, m.checkingConnection, m.spinner.View())
+	styledActions := mutedStyle.Render(actions)
+	available := max(m.width-2, 1)
+	gap := available - lipgloss.Width(connection) - lipgloss.Width(styledActions)
+	if gap >= 3 {
+		return lipgloss.NewStyle().Width(available).Render(connection + strings.Repeat(" ", gap) + styledActions)
+	}
+	compactConnection := compactConnectionLine(m.connected, m.checkingConnection, m.spinner.View())
+	gap = available - lipgloss.Width(compactConnection) - lipgloss.Width(styledActions)
+	if gap < 2 {
+		remaining := available - lipgloss.Width(compactConnection) - 2
+		if remaining <= 0 {
+			return compactConnection
+		}
+		return compactConnection + "  " + mutedStyle.Render(truncate(actions, remaining))
+	}
+	return compactConnection + strings.Repeat(" ", gap) + styledActions
 }
 
 func (m Model) dashboardView() string {
@@ -330,9 +340,7 @@ func (m Model) dashboardView() string {
 		mainParts = append(mainParts, "", errorStyle.Render("! "+friendlyError(m.err)))
 	}
 	main := lipgloss.NewStyle().Padding(1, 3).Render(strings.Join(mainParts, "\n"))
-	footer := lipgloss.NewStyle().PaddingLeft(3).Render(m.footerView(innerWidth))
-	gap := max(m.height-lipgloss.Height(main)-lipgloss.Height(footer), 0)
-	return main + strings.Repeat("\n", gap) + footer
+	return m.screenView(main, m.dashboardHelp())
 }
 
 func (m Model) headerView(width int) string {
@@ -400,19 +408,15 @@ func (m Model) recentGamesView(width int) string {
 	return strings.Join(lines, "\n")
 }
 
-func (m Model) footerView(width int) string {
+func (m Model) dashboardHelp() string {
 	version := m.build.Version
 	if version == "" {
 		version = "dev"
 	}
-	actions := lipgloss.NewStyle().Foreground(colorFuchsia).Render("[r] refresh") + "   " +
-		lipgloss.NewStyle().Foreground(colorFuchsia).Render("[l] logout") + "   " +
-		lipgloss.NewStyle().Foreground(colorFuchsia).Render("[q] quit")
 	if m.loading {
-		actions = m.spinner.View() + " " + valueStyle.Render(m.status)
+		return m.status
 	}
-	gap := max(width-lipgloss.Width(actions)-len(version), 1)
-	return actions + strings.Repeat(" ", gap) + mutedStyle.Render(version)
+	return "r refresh   l logout   q quit   " + version
 }
 
 func brandLogo(width int) string {
@@ -452,6 +456,16 @@ func connectionLine(connected, checking bool, spinnerView string) string {
 		return lipgloss.NewStyle().Foreground(colorGreen).Render("● Connected") + mutedStyle.Render("  api.bluff.thsnkhn.com")
 	}
 	return errorStyle.Render("● Offline") + mutedStyle.Render("  check your connection")
+}
+
+func compactConnectionLine(connected, checking bool, spinnerView string) string {
+	if checking {
+		return spinnerView + " " + mutedStyle.Render("Checking")
+	}
+	if connected {
+		return lipgloss.NewStyle().Foreground(colorGreen).Render("● Connected")
+	}
+	return errorStyle.Render("● Offline")
 }
 
 func sectionHeading(title string, width int) string {
@@ -506,12 +520,12 @@ func (m Model) mouseHandler() func(tea.MouseMsg) tea.Cmd {
 
 func (m Model) homeHitRegions() []hitRegion {
 	prefix := m.homePrefix()
-	bodyHeight := lipgloss.Height(prefix) + homeItemCount + 2
+	bodyHeight := lipgloss.Height(prefix) + homeItemCount
 	if m.err != nil {
 		bodyHeight += 2
 	}
 	x := max((m.width-homeMenuWidth)/2, 0)
-	y := max((m.height-bodyHeight)/2, 0) + lipgloss.Height(prefix)
+	y := max((m.height-1-bodyHeight)/2, 0) + lipgloss.Height(prefix)
 	regions := make([]hitRegion, homeItemCount)
 	for index := range regions {
 		regions[index] = hitRegion{x0: x, x1: x + homeMenuWidth, y0: y + index, y1: y + index, value: fmt.Sprint(index)}
@@ -526,9 +540,8 @@ func (m Model) appMenuHitRegions() []hitRegion {
 	}
 	partsBeforeMenu := []string{
 		brandLogo(m.width), "", "",
-		mutedStyle.Render("Private games. One honest ledger."), "",
-		m.identityLine(), connectionLine(m.connected, false, ""), "",
-		brandStyle.Render("What would you like to do?"), "",
+		m.identityLine(), "",
+		brandStyle.Render("Choose your next move."), "",
 	}
 	prefixHeight := lipgloss.Height(lipgloss.JoinVertical(lipgloss.Center, partsBeforeMenu...))
 	bodyHeight := prefixHeight + len(items)
@@ -600,13 +613,6 @@ func (m Model) playerName(id string) string {
 		}
 	}
 	return "Unknown player"
-}
-
-func place(width, height int, content string) string {
-	if width <= 0 || height <= 0 {
-		return content
-	}
-	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, content)
 }
 
 func statusBadge(status string) string {
