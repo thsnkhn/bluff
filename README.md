@@ -10,8 +10,11 @@ adds up.
 With Homebrew:
 
 ```bash
-brew install thsnkhn/tap/bluff
+brew tap thsnkhn/bluff https://github.com/thsnkhn/bluff.git
+brew install thsnkhn/bluff/bluff
 ```
+
+Upgrade later with `brew update && brew upgrade bluff`.
 
 Or install the latest version from source:
 
