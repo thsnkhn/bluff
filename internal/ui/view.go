@@ -262,6 +262,11 @@ func brandLogo(width int) string {
 
 func gradientLogo(logo string) string {
 	lines := strings.Split(logo, "\n")
+	logoWidth := 0
+	for _, line := range lines {
+		logoWidth = max(logoWidth, lipgloss.Width(line))
+	}
+
 	start := [3]int{247, 128, 226}
 	end := [3]int{117, 113, 249}
 	last := max(len(lines)-1, 1)
@@ -271,7 +276,8 @@ func gradientLogo(logo string) string {
 			start[1]+(end[1]-start[1])*index/last,
 			start[2]+(end[2]-start[2])*index/last,
 		))
-		lines[index] = lipgloss.NewStyle().Bold(true).Foreground(color).Render(line)
+		padded := line + strings.Repeat(" ", logoWidth-lipgloss.Width(line))
+		lines[index] = lipgloss.NewStyle().Bold(true).Foreground(color).Render(padded)
 	}
 	return strings.Join(lines, "\n")
 }
