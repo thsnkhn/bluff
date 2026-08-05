@@ -38,6 +38,27 @@ func (f fakeAPI) Users(context.Context, string) ([]api.User, error) { return f.u
 func (f fakeAPI) CreateInvitation(context.Context, string) (api.Invitation, error) {
 	return api.Invitation{Code: "A1B2C3"}, nil
 }
+func (f fakeAPI) Tables(context.Context, string) ([]api.TableSummary, error) {
+	return f.bootstrap.Tables, nil
+}
+func (f fakeAPI) Table(context.Context, string, string) (api.TableDetail, error) {
+	return api.TableDetail{}, errors.New("not implemented")
+}
+func (f fakeAPI) CreateTable(context.Context, string, string) (api.TableSummary, error) {
+	return api.TableSummary{}, errors.New("not implemented")
+}
+func (f fakeAPI) CreateTablePlayer(context.Context, string, string, string) (api.TablePlayer, error) {
+	return api.TablePlayer{}, errors.New("not implemented")
+}
+func (f fakeAPI) CreateGameFormat(context.Context, string, string, string, int, []api.ChipDenomination) (api.GameFormat, error) {
+	return api.GameFormat{}, errors.New("not implemented")
+}
+func (f fakeAPI) PreviewTableGame(context.Context, string, string, string, string, string, []api.GameParticipantInput) (api.TableGame, error) {
+	return api.TableGame{}, errors.New("not implemented")
+}
+func (f fakeAPI) RecordTableGame(context.Context, string, string, string, string, string, []api.GameParticipantInput) (api.TableDetail, error) {
+	return api.TableDetail{}, errors.New("not implemented")
+}
 func (f fakeAPI) Logout(context.Context, string) error { return nil }
 
 type fakeStore struct {
@@ -175,9 +196,14 @@ func TestAdminMenuShowsUsersAndKeepsFutureItemsDisabled(t *testing.T) {
 	model.connected = true
 
 	view := model.View().Content
-	for _, phrase := range []string{"@bluff", "ADMIN", "Users", "Tables  soon", "Games  soon", "Game formats  soon", "My info  soon", "Log out"} {
+	for _, phrase := range []string{"@bluff", "ADMIN", "Users", "Tables", "My info  soon", "Log out"} {
 		if !strings.Contains(view, phrase) {
 			t.Errorf("authenticated menu does not contain %q", phrase)
+		}
+	}
+	for _, removed := range []string{"Games", "Game formats"} {
+		if strings.Contains(view, removed) {
+			t.Errorf("authenticated menu still contains standalone %q", removed)
 		}
 	}
 	if strings.Contains(view, "Players") {
@@ -304,8 +330,8 @@ func TestUsersViewPinsHelpToTerminalBottom(t *testing.T) {
 	if len(lines) != model.height {
 		t.Fatalf("rendered lines = %d, want %d", len(lines), model.height)
 	}
-	if !strings.Contains(lines[len(lines)-1], "mouse click") {
-		t.Fatalf("bottom line = %q, want pinned help", lines[len(lines)-1])
+	if !strings.Contains(lines[len(lines)-1], "/ search") || strings.Contains(lines[len(lines)-1], "mouse click") {
+		t.Fatalf("bottom line = %q, want keyboard-only pinned help", lines[len(lines)-1])
 	}
 	for _, phrase := range []string{"~bluff", "/ users", "@bluff", "c  Create invite code", "@dealer", "MEMBER"} {
 		if !strings.Contains(plainView, phrase) {
@@ -399,6 +425,59 @@ func TestActionBarHoverAddsVisualStateWithoutChangingWidth(t *testing.T) {
 	}
 }
 
+func TestTableRecordFlowOffersQuickAddAndGameHistory(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+	model.width, model.height = 100, 36
+	model.table = &api.TableDetail{
+		Table:     api.TableSummary{ID: "table-1", Name: "#Saturday table", HostUsername: "bluff"},
+		CanManage: true,
+		Players:   []api.TablePlayer{{ID: "p1", Name: "Alice"}, {ID: "p2", Name: "Bob"}},
+		Formats:   []api.GameFormat{{ID: "f1", Name: "Saturday 100", RequiredEntry: 100, Chips: []api.ChipDenomination{{ID: "c1", Label: "white", Color: "white", Value: 50}}}},
+		Games:     []api.TableGame{{ID: "g1", Date: "2026-08-06", Format: api.GameFormat{Name: "Saturday 100", RequiredEntry: 100}, Status: "settled"}},
+	}
+	model.screen, model.loading = recordGameScreen, false
+	model.recordPhase = recordPlayersPhase
+	model.recordSelected = map[string]bool{}
+	updated, _, handled := model.updateTableKey("a")
+	if !handled || updated.(Model).screen != playerCreateScreen {
+		t.Fatalf("quick add transition = %#v, handled=%v", updated, handled)
+	}
+	quickAdd := updated.(Model)
+	if !quickAdd.recordQuickAdd {
+		t.Fatal("quick add mode was not retained while creating the player")
+	}
+
+	quickAdd.screen = gamesScreen
+	view := quickAdd.View().Content
+	if !strings.Contains(view, "Saturday 100") || !strings.Contains(view, "2026-08-06") {
+		t.Fatalf("games view is missing the recorded game: %q", view)
+	}
+	quickAdd.screen = tableDetailScreen
+	if !strings.Contains(quickAdd.View().Content, "♛") {
+		t.Fatal("table host is missing the crown marker")
+	}
+}
+
+func TestTableGameMouseRegionsSelectHistoryRows(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+	model.width, model.height = 100, 36
+	model.screen, model.loading = gamesScreen, false
+	model.table = &api.TableDetail{Table: api.TableSummary{Name: "#Saturday table"}, Games: []api.TableGame{{ID: "g1"}, {ID: "g2"}}}
+	regions := model.tableHitRegions()
+	found := false
+	for _, region := range regions {
+		if strings.HasPrefix(region.value, "game:") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("game history did not expose mouse hit regions")
+	}
+}
+
 func TestUsersActionBarTracksMouseHover(t *testing.T) {
 	t.Parallel()
 	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
@@ -417,6 +496,30 @@ func TestUsersActionBarTracksMouseHover(t *testing.T) {
 	}
 }
 
+func TestSlashSearchFiltersUsersAndEscClearsIt(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{users: []api.User{{Username: "bluff", Role: "admin"}, {Username: "dealer", Role: "member"}}}, fakeStore{}, BuildInfo{})
+	model.screen, model.loading = usersScreen, false
+	model.users = []api.User{{Username: "bluff", Role: "admin"}, {Username: "dealer", Role: "member"}}
+	updated, _ := model.Update(tea.KeyPressMsg(tea.Key{Code: '/', Text: "/"}))
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: 'd', Text: "d"}))
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: 'e', Text: "e"}))
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: 'a', Text: "a"}))
+	model = updated.(Model)
+	list := model.userList(80)
+	if !model.searchActive || model.searchQuery != "dea" || !strings.Contains(list, "@dealer") || strings.Contains(list, "@bluff") {
+		t.Fatalf("search state/view = active=%v query=%q view=%q", model.searchActive, model.searchQuery, list)
+	}
+	updated, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
+	cleared := updated.(Model)
+	if cleared.searchActive || cleared.searchQuery != "" {
+		t.Fatalf("search did not clear on escape: active=%v query=%q", cleared.searchActive, cleared.searchQuery)
+	}
+}
+
 func TestInvitePasswordAcceptsEightCharacters(t *testing.T) {
 	t.Parallel()
 	if err := validPassword("12345678"); err != nil {
@@ -424,6 +527,19 @@ func TestInvitePasswordAcceptsEightCharacters(t *testing.T) {
 	}
 	if err := validPassword("1234567"); err == nil {
 		t.Fatal("7-character password accepted")
+	}
+}
+
+func TestPublicTableNameRequiresHashPrefix(t *testing.T) {
+	t.Parallel()
+	if err := publicTableName("Saturday-table"); err != nil {
+		t.Fatalf("valid public table name rejected: %v", err)
+	}
+	if canonical := canonicalTableName("Saturday-TABLE"); canonical != "#saturday-table" {
+		t.Fatalf("canonical table name = %q, want #saturday-table", canonical)
+	}
+	if err := publicTableName("Saturday table"); err == nil {
+		t.Fatal("table name with spaces accepted")
 	}
 }
 

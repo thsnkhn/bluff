@@ -32,6 +32,17 @@ const (
 	appMenuScreen
 	usersScreen
 	dashboardScreen
+	tablesScreen
+	tableDetailScreen
+	formatsScreen
+	formatDetailScreen
+	playersScreen
+	gamesScreen
+	gameDetailScreen
+	tableCreateScreen
+	formatCreateScreen
+	playerCreateScreen
+	recordGameScreen
 )
 
 const (
@@ -57,6 +68,35 @@ type inviteValues struct {
 	code     string
 	username string
 	password string
+}
+
+type tableFormValues struct {
+	name string
+}
+
+type formatFormValues struct {
+	name          string
+	requiredEntry string
+	chips         string
+}
+
+type playerFormValues struct {
+	name string
+}
+
+type recordPhase int
+
+const (
+	recordDetailsPhase recordPhase = iota
+	recordFormatPhase
+	recordPlayersPhase
+	recordChipCountsPhase
+	recordReviewPhase
+)
+
+type recordDetailsValues struct {
+	date    string
+	remarks string
 }
 
 type appAction string
@@ -87,6 +127,13 @@ type API interface {
 	Bootstrap(context.Context, string) (api.Bootstrap, error)
 	Users(context.Context, string) ([]api.User, error)
 	CreateInvitation(context.Context, string) (api.Invitation, error)
+	Tables(context.Context, string) ([]api.TableSummary, error)
+	Table(context.Context, string, string) (api.TableDetail, error)
+	CreateTable(context.Context, string, string) (api.TableSummary, error)
+	CreateTablePlayer(context.Context, string, string, string) (api.TablePlayer, error)
+	CreateGameFormat(context.Context, string, string, string, int, []api.ChipDenomination) (api.GameFormat, error)
+	PreviewTableGame(context.Context, string, string, string, string, string, []api.GameParticipantInput) (api.TableGame, error)
+	RecordTableGame(context.Context, string, string, string, string, string, []api.GameParticipantInput) (api.TableDetail, error)
 	Logout(context.Context, string) error
 }
 
@@ -120,6 +167,30 @@ type Model struct {
 	usersIndex         int
 	usersActionHover   string
 	users              []api.User
+	tables             []api.TableSummary
+	table              *api.TableDetail
+	tableIndex         int
+	formatIndex        int
+	playerIndex        int
+	gameIndex          int
+	tablesActionHover  string
+	formatActionHover  string
+	playerActionHover  string
+	tableForm          *tableFormValues
+	formatForm         *formatFormValues
+	playerForm         *playerFormValues
+	recordDetails      *recordDetailsValues
+	recordPhase        recordPhase
+	recordFormatIndex  int
+	recordPlayerIndex  int
+	recordSelected     map[string]bool
+	recordCounts       map[string]map[string]int
+	recordChipValues   []string
+	recordPreview      *api.TableGame
+	recordQuickAdd     bool
+	recordQuickAddID   string
+	searchActive       bool
+	searchQuery        string
 	notice             string
 	connected          bool
 	checkingConnection bool
@@ -158,6 +229,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		key := msg.String()
 		if key == "ctrl+c" {
 			return m, tea.Quit
+		}
+		if m.searchActive {
+			switch key {
+			case "esc":
+				m.searchActive, m.searchQuery = false, ""
+				return m, nil
+			case "enter":
+				m.searchActive = false
+				return m, nil
+			case "backspace":
+				m.searchQuery = trimLastRune(m.searchQuery)
+				return m, nil
+			default:
+				if msg.Text != "" {
+					m.searchQuery += msg.Text
+					return m, nil
+				}
+			}
+		}
+		if key == "/" && m.isSearchableScreen() {
+			m.searchActive, m.searchQuery = true, ""
+			return m, nil
 		}
 		if m.screen == homeScreen && !m.loading {
 			switch key {
@@ -214,11 +307,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch key {
 			case "up", "k":
 				m.usersActionHover = ""
-				m.moveUsers(-1)
+				moveVisible(&m.usersIndex, m.visibleUserIndices(), -1)
 				return m, nil
 			case "down", "j":
 				m.usersActionHover = ""
-				m.moveUsers(1)
+				moveVisible(&m.usersIndex, m.visibleUserIndices(), 1)
 				return m, nil
 			case "c":
 				m.usersActionHover = ""
@@ -244,6 +337,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "l":
 				m.loading, m.status, m.err = true, "Closing your session", nil
 				return m, tea.Batch(m.spinner.Tick, m.logoutCmd())
+			}
+		}
+		if !m.loading && m.isTableInteractiveScreen() {
+			if updated, cmd, handled := m.updateTableKey(key); handled {
+				return updated, cmd
 			}
 		}
 	}
@@ -283,6 +381,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.usersActionHover = ""
 		switch msg.action {
+		case "search":
+			m.searchActive, m.searchQuery = true, ""
+			return m, nil
 		case "create":
 			m.loading, m.status, m.err, m.notice = true, "Creating invite code", nil, ""
 			return m, tea.Batch(m.spinner.Tick, m.createInvitationCmd())
@@ -308,10 +409,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "quit":
 			return m, tea.Quit
 		}
+	case tableMouseMsg:
+		return m.updateTableMouse(msg)
 	case sessionRestoredMsg:
 		m.loading = false
 		m.token, m.user, m.bootstrap = msg.token, msg.user, msg.bootstrap
 		m.screen, m.err, m.connected = appMenuScreen, nil, true
+		m.tables = msg.bootstrap.Tables
+		m.searchActive, m.searchQuery = false, ""
 		m.appIndex = m.firstEnabledAppIndex()
 		return m, nil
 	case loginRequiredMsg:
@@ -328,6 +433,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.token, m.user, m.bootstrap = msg.token, msg.user, msg.bootstrap
 		m.screen, m.err, m.connected = appMenuScreen, nil, true
+		m.tables = msg.bootstrap.Tables
+		m.searchActive, m.searchQuery = false, ""
 		m.appIndex = m.firstEnabledAppIndex()
 		m.login.password = ""
 		if m.invite != nil {
@@ -358,6 +465,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.resizeForm()
 			return m, m.form.Init()
 		}
+		if m.isTableScreen() {
+			m.loading = false
+			return m, nil
+		}
 		return m, nil
 	case refreshedMsg:
 		m.loading, m.bootstrap, m.err = false, msg.bootstrap, nil
@@ -374,9 +485,52 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading, m.err = false, nil
 		m.screen, m.notice = usersScreen, "Invite code  "+msg.invitation.Code+"  ·  share it once"
 		return m, nil
+	case tablesLoadedMsg:
+		m.loading, m.tables, m.err = false, msg.tables, nil
+		if m.tableIndex >= len(m.tables) {
+			m.tableIndex = max(len(m.tables)-1, 0)
+		}
+		return m, nil
+	case tableLoadedMsg:
+		m.loading, m.table, m.err, m.notice = false, &msg.table, nil, ""
+		if m.recordQuickAdd && m.recordQuickAddID != "" {
+			for index, player := range m.table.Players {
+				if player.ID == m.recordQuickAddID {
+					m.playerIndex = index
+					m.recordSelected[player.ID] = true
+					break
+				}
+			}
+			m.recordQuickAdd, m.recordQuickAddID = false, ""
+			m.screen, m.recordPhase = recordGameScreen, recordPlayersPhase
+		}
+		return m, nil
+	case tableCreatedMsg:
+		m.tables = append(m.tables, msg.table)
+		m.tableIndex = len(m.tables) - 1
+		m.loading, m.status, m.err = true, "Opening table", nil
+		return m, tea.Batch(m.spinner.Tick, m.tableCmd(msg.table.ID))
+	case tablePlayerCreatedMsg:
+		if m.recordQuickAdd {
+			m.recordQuickAddID = msg.player.ID
+		}
+		m.loading, m.status, m.err = true, "Refreshing players", nil
+		return m, tea.Batch(m.spinner.Tick, m.tableCmd(m.table.Table.ID))
+	case tableFormatCreatedMsg:
+		m.loading, m.status, m.err = true, "Refreshing formats", nil
+		return m, tea.Batch(m.spinner.Tick, m.tableCmd(m.table.Table.ID))
+	case tableGamePreviewedMsg:
+		m.loading, m.recordPreview, m.err = false, &msg.game, nil
+		return m, nil
+	case tableGameRecordedMsg:
+		m.loading, m.table, m.recordPreview, m.err, m.notice = false, &msg.table, nil, nil, "Game recorded"
+		m.screen = tableDetailScreen
+		return m, nil
 	case loggedOutMsg:
 		m.loading, m.token, m.user, m.bootstrap = false, "", api.User{}, api.Bootstrap{}
 		m.screen, m.err = homeScreen, msg.err
+		m.tables, m.table = nil, nil
+		m.searchActive, m.searchQuery = false, ""
 		m.resetLoginForm()
 		m.resizeForm()
 		return m, nil
@@ -436,6 +590,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	if m.isTableFormScreen() && !m.loading {
+		updated, cmd := m.form.Update(msg)
+		if form, ok := updated.(*huh.Form); ok {
+			m.form = form
+		}
+		if m.form.State == huh.StateCompleted {
+			return m.handleTableFormCompleted()
+		}
+		if m.form.State == huh.StateAborted {
+			m.screen = m.tableParentScreen()
+			m.err = nil
+			return m, nil
+		}
+		return m, cmd
+	}
+
 	return m, nil
 }
 
@@ -461,6 +631,28 @@ func (m Model) View() tea.View {
 		content = m.usersView()
 	case dashboardScreen:
 		content = m.dashboardView()
+	case tablesScreen:
+		content = m.tablesView()
+	case tableDetailScreen:
+		content = m.tableDetailView()
+	case formatsScreen:
+		content = m.formatsView()
+	case formatDetailScreen:
+		content = m.formatDetailView()
+	case playersScreen:
+		content = m.playersView()
+	case gamesScreen:
+		content = m.gamesView()
+	case gameDetailScreen:
+		content = m.gameDetailView()
+	case tableCreateScreen:
+		content = m.tableCreateView()
+	case formatCreateScreen:
+		content = m.formatCreateView()
+	case playerCreateScreen:
+		content = m.playerCreateView()
+	case recordGameScreen:
+		content = m.recordGameView()
 	}
 	view := tea.NewView(content)
 	view.AltScreen = true
@@ -526,6 +718,9 @@ func (m *Model) resizeForm() {
 	height := 16
 	if m.screen == inviteAccountScreen {
 		height = 18
+	}
+	if m.screen == formatCreateScreen || m.screen == recordGameScreen {
+		height = 22
 	}
 	m.form.WithWidth(width).WithHeight(min(max(m.height-18, 8), height))
 }
@@ -739,9 +934,7 @@ func (m Model) appMenuItems() []appMenuItem {
 		items = append(items, appMenuItem{title: "Users", action: actionUsers, enabled: true})
 	}
 	items = append(items,
-		appMenuItem{title: "Tables", action: actionTables},
-		appMenuItem{title: "Games", action: actionGames},
-		appMenuItem{title: "Game formats", action: actionGameFormats},
+		appMenuItem{title: "Tables", action: actionTables, enabled: true},
 		appMenuItem{title: "My info", action: actionMyInfo},
 		appMenuItem{title: "Log out", action: actionLogout, enabled: true},
 		appMenuItem{title: "Quit", action: actionQuit, enabled: true},
@@ -782,6 +975,9 @@ func (m Model) activateAppItem() (tea.Model, tea.Cmd) {
 	case actionUsers:
 		m.screen, m.loading, m.status, m.err, m.notice = usersScreen, true, "Loading users", nil, ""
 		return m, tea.Batch(m.spinner.Tick, m.loadUsersCmd())
+	case actionTables:
+		m.screen, m.loading, m.status, m.err, m.notice = tablesScreen, true, "Loading tables", nil, ""
+		return m, tea.Batch(m.spinner.Tick, m.tablesCmd())
 	case actionLogout:
 		m.loading, m.status, m.err = true, "Closing your session", nil
 		return m, tea.Batch(m.spinner.Tick, m.logoutCmd())
@@ -790,14 +986,6 @@ func (m Model) activateAppItem() (tea.Model, tea.Cmd) {
 	default:
 		return m, nil
 	}
-}
-
-func (m *Model) moveUsers(direction int) {
-	if len(m.users) == 0 {
-		m.usersIndex = 0
-		return
-	}
-	m.usersIndex = (m.usersIndex + direction + len(m.users)) % len(m.users)
 }
 
 func (m Model) logoutCmd() tea.Cmd {

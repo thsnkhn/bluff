@@ -136,6 +136,58 @@ func (c *Client) Bootstrap(ctx context.Context, token string) (Bootstrap, error)
 	return request[Bootstrap](ctx, c, http.MethodGet, "/v1/bootstrap", token, nil)
 }
 
+// Tables returns all active tables visible to the signed-in account.
+func (c *Client) Tables(ctx context.Context, token string) ([]TableSummary, error) {
+	result, err := request[struct {
+		Tables []TableSummary `json:"tables"`
+	}](ctx, c, http.MethodGet, "/v1/tables", token, nil)
+	return result.Tables, err
+}
+
+// Table returns the complete read model for one table.
+func (c *Client) Table(ctx context.Context, token, tableID string) (TableDetail, error) {
+	return request[TableDetail](ctx, c, http.MethodGet, tablePath(tableID), token, nil)
+}
+
+// CreateTable creates a table owned by the current account.
+func (c *Client) CreateTable(ctx context.Context, token, name string) (TableSummary, error) {
+	result, err := request[struct {
+		Table TableSummary `json:"table"`
+	}](ctx, c, http.MethodPost, "/v1/tables", token, map[string]string{"name": name})
+	return result.Table, err
+}
+
+// CreateTablePlayer adds a player profile to a table.
+func (c *Client) CreateTablePlayer(ctx context.Context, token, tableID, name string) (TablePlayer, error) {
+	result, err := request[struct {
+		Player TablePlayer `json:"player"`
+	}](ctx, c, http.MethodPost, tablePath(tableID)+"/players", token, map[string]string{"name": name})
+	return result.Player, err
+}
+
+// CreateGameFormat adds a chip-based game format to a table.
+func (c *Client) CreateGameFormat(ctx context.Context, token, tableID, name string, requiredEntry int, chips []ChipDenomination) (GameFormat, error) {
+	result, err := request[struct {
+		Format GameFormat `json:"format"`
+	}](ctx, c, http.MethodPost, tablePath(tableID)+"/formats", token, map[string]any{
+		"name": name, "requiredEntry": requiredEntry, "chips": chips,
+	})
+	return result.Format, err
+}
+
+// PreviewTableGame asks the server to calculate a completed game's results.
+func (c *Client) PreviewTableGame(ctx context.Context, token, tableID, formatID, date, remarks string, participants []GameParticipantInput) (TableGame, error) {
+	result, err := request[struct {
+		Preview TableGame `json:"preview"`
+	}](ctx, c, http.MethodPost, tablePath(tableID)+"/games/preview", token, tableGameBody(formatID, date, remarks, participants))
+	return result.Preview, err
+}
+
+// RecordTableGame atomically records a completed game and returns the updated table.
+func (c *Client) RecordTableGame(ctx context.Context, token, tableID, formatID, date, remarks string, participants []GameParticipantInput) (TableDetail, error) {
+	return request[TableDetail](ctx, c, http.MethodPost, tablePath(tableID)+"/games", token, tableGameBody(formatID, date, remarks, participants))
+}
+
 // Logout revokes the current server session.
 func (c *Client) Logout(ctx context.Context, token string) error {
 	_, err := request[struct {
@@ -199,4 +251,20 @@ func request[T any](ctx context.Context, client *Client, method, path, token str
 		return zero, &Error{Status: response.StatusCode, Code: decoded.Error.Code, Message: message, RequestID: decoded.RequestID}
 	}
 	return decoded.Data, nil
+}
+
+func tableGameBody(formatID, date, remarks string, participants []GameParticipantInput) map[string]any {
+	body := map[string]any{
+		"formatId":     formatID,
+		"date":         date,
+		"participants": participants,
+	}
+	if strings.TrimSpace(remarks) != "" {
+		body["remarks"] = strings.TrimSpace(remarks)
+	}
+	return body
+}
+
+func tablePath(tableID string) string {
+	return "/v1/tables/" + url.PathEscape(tableID)
 }

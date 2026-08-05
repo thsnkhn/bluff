@@ -97,7 +97,7 @@ func (m Model) homeView() string {
 	}
 	body := lipgloss.JoinVertical(lipgloss.Center, parts...)
 	return m.screenView(lipgloss.NewStyle().Width(m.homeWidth()).Align(lipgloss.Center).Render(body),
-		"↑↓ move   enter select   mouse click   q quit")
+		"↑↓ move   enter select   q quit")
 }
 
 func (m Model) homePrefix() string {
@@ -205,7 +205,7 @@ func (m Model) appMenuView() string {
 	}
 	body := lipgloss.NewStyle().Width(m.homeWidth()).Align(lipgloss.Center).
 		Render(lipgloss.JoinVertical(lipgloss.Center, parts...))
-	return m.screenView(body, "↑↓ move   enter select   mouse click   q quit")
+	return m.screenView(body, "↑↓ move   enter select   q quit")
 }
 
 func (m Model) usersView() string {
@@ -217,7 +217,7 @@ func (m Model) usersView() string {
 	parts := []string{
 		pageHeader(pageWidth, "users"),
 		"",
-		actionBar(usersActionBarItems(), m.usersActionHover),
+		searchActionBar(usersActionBarItems(), m.usersActionHover, m.searchActive, m.searchQuery),
 		"",
 		m.userList(contentWidth),
 	}
@@ -254,9 +254,14 @@ func (m Model) userList(width int) string {
 			mutedStyle.Render("Create an invite code to welcome someone."),
 		)
 	}
+	if len(m.visibleUserIndices()) == 0 {
+		return mutedStyle.Render("No users match the search.")
+	}
 	usernameWidth := max(width-25, 16)
 	lines := []string{mutedStyle.Render(fmt.Sprintf("%-4s %-*s %s", "", usernameWidth, "USERNAME", "ROLE"))}
-	for index, user := range m.users {
+	visible := m.visibleUserIndices()
+	for _, index := range visible {
+		user := m.users[index]
 		marker := "  "
 		style := valueStyle
 		if index == m.usersIndex {
@@ -267,12 +272,12 @@ func (m Model) userList(width int) string {
 		line := fmt.Sprintf("%-4s %-*s %s", marker, usernameWidth, "@"+truncate(user.Username, usernameWidth-1), role)
 		lines = append(lines, style.Render(line))
 	}
-	lines = append(lines, "", mutedStyle.Render(fmt.Sprintf("%d users", len(m.users))))
+	lines = append(lines, "", mutedStyle.Render(fmt.Sprintf("%d users", len(visible))))
 	return strings.Join(lines, "\n")
 }
 
 func usersFooter() string {
-	return "↑↓ move   c invite   r refresh   esc back   mouse click"
+	return "↑↓ move   c invite   r refresh   / search   esc back"
 }
 
 func (m Model) loadingViewBody() string {
@@ -529,6 +534,24 @@ func (m Model) mouseHandler() func(tea.MouseMsg) tea.Cmd {
 					return func() tea.Msg { return dashboardMouseMsg{action: region.value, activate: activate} }
 				}
 			}
+		case tablesScreen, tableDetailScreen, formatsScreen, formatDetailScreen, playersScreen, gamesScreen, gameDetailScreen, recordGameScreen:
+			for _, region := range m.tableHitRegions() {
+				if inRegion(mouse.X, mouse.Y, region) {
+					index := -1
+					switch {
+					case strings.HasPrefix(region.value, "table:"):
+						_, _ = fmt.Sscanf(region.value, "table:%d", &index)
+					case strings.HasPrefix(region.value, "format:"):
+						_, _ = fmt.Sscanf(region.value, "format:%d", &index)
+					case strings.HasPrefix(region.value, "player:"):
+						_, _ = fmt.Sscanf(region.value, "player:%d", &index)
+					case strings.HasPrefix(region.value, "game:"):
+						_, _ = fmt.Sscanf(region.value, "game:%d", &index)
+					}
+					return func() tea.Msg { return tableMouseMsg{action: region.value, index: index, activate: activate} }
+				}
+			}
+			return func() tea.Msg { return tableMouseMsg{index: -1} }
 		}
 		return nil
 	}
@@ -582,11 +605,11 @@ func (m Model) usersHitRegions() []hitRegion {
 	x, y := 2, 1
 	shortcutY := y + lipgloss.Height(pageHeader(pageWidth, "users")) + 1
 	items := usersActionBarItems()
-	shortcutHeight := lipgloss.Height(actionBar(items, m.usersActionHover))
+	shortcutHeight := lipgloss.Height(searchActionBar(items, m.usersActionHover, m.searchActive, m.searchQuery))
 	regions := actionBarHitRegions(x, shortcutY, items)
 	listY := shortcutY + shortcutHeight + 1
-	for index := range m.users {
-		regions = append(regions, hitRegion{x0: x, x1: x + width, y0: listY + 1 + index, y1: listY + 1 + index, value: fmt.Sprintf("user:%d", index)})
+	for row, index := range m.visibleUserIndices() {
+		regions = append(regions, hitRegion{x0: x, x1: x + width, y0: listY + 1 + row, y1: listY + 1 + row, value: fmt.Sprintf("user:%d", index)})
 	}
 	return regions
 }

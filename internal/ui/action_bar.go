@@ -73,6 +73,7 @@ func usersActionBarItems() []actionBarItem {
 	return []actionBarItem{
 		{key: "c", label: "Create invite code", action: "create", accent: true},
 		{key: "r", label: "Refresh", action: "refresh"},
+		{key: "/", label: "Search", action: "search"},
 		{key: "esc", label: "Back", action: "back"},
 	}
 }
