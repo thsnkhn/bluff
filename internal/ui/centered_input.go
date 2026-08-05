@@ -15,6 +15,7 @@ type centeredInput struct {
 	*huh.Input
 	value       *string
 	placeholder string
+	prefix      string
 	width       int
 }
 
@@ -53,17 +54,26 @@ func (input *centeredInput) View() string {
 	textLine := len(lines) - 2 // The bottom border is the final line.
 	for index, line := range lines {
 		if index == textLine {
+			if *input.value == "" && input.prefix != "" {
+				// Huh reserves a cursor cell when it renders an empty input, which
+				// can clip the last placeholder character at narrow widths. Render
+				// the complete public identifier ourselves in that state.
+				lines[index] = centeredLine(mutedStyle.Render(input.prefix+input.placeholder), input.width)
+				continue
+			}
 			plain := ansi.Strip(line)
 			leftTrimmed := strings.TrimLeftFunc(plain, unicode.IsSpace)
 			left := ansi.StringWidth(plain) - ansi.StringWidth(leftTrimmed)
 			visible := ansi.StringWidth(input.placeholder)
-			prefix := ""
+			cursorBalance := ""
 			if *input.value != "" {
 				visible = ansi.StringWidth(*input.value) + 1 // Preserve the cursor cell.
-				prefix = " "                                 // Balance the cursor cell so the value itself stays centered.
+				cursorBalance = " "                          // Balance the cursor cell so the value itself stays centered.
 			}
-			visible = min(visible, max(input.width-1, 1))
-			lines[index] = centeredLine(prefix+ansi.Cut(line, left, left+visible), input.width)
+			prefixWidth := ansi.StringWidth(input.prefix)
+			visible = min(visible, max(input.width-prefixWidth-ansi.StringWidth(cursorBalance), 1))
+			prefix := lipgloss.NewStyle().Foreground(colorFuchsia).Render(input.prefix)
+			lines[index] = centeredLine(cursorBalance+prefix+ansi.Cut(line, left, left+visible), input.width)
 			continue
 		}
 		plain := ansi.Strip(line)
@@ -101,6 +111,14 @@ func (input *centeredInput) WithWidth(width int) huh.Field {
 
 func (input *centeredInput) WithHeight(height int) huh.Field {
 	input.Input.WithHeight(height)
+	return input
+}
+
+// WithPrefix renders a visual prefix without including it in the submitted value.
+// This keeps canonicalization in the API request while making public identifiers
+// clear as they are entered.
+func (input *centeredInput) WithPrefix(prefix string) *centeredInput {
+	input.prefix = prefix
 	return input
 }
 

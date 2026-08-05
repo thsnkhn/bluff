@@ -617,7 +617,7 @@ func (m Model) tablesView() string {
 }
 
 func tablesFooter() string {
-	return "↑↓ move   enter open   c create   r refresh   / search   esc back"
+	return "↑↓ move   enter open   c create"
 }
 
 func (m Model) tableSummaryList(width int) string {
@@ -678,7 +678,7 @@ func (m Model) tableDetailView() string {
 }
 
 func tableDetailFooter() string {
-	return "↑↓ move   enter select   r record   g games   f formats   p players   / search   esc back"
+	return "↑↓ move   enter select   r record   g games   f formats   p players"
 }
 
 func (m Model) tableStandings(width int) string {
@@ -732,9 +732,9 @@ func (m Model) formatsView() string {
 
 func formatsFooter(canManage bool) string {
 	if canManage {
-		return "↑↓ move   enter inspect   c create   / search   esc back"
+		return "↑↓ move   enter inspect   c create"
 	}
-	return "↑↓ move   enter inspect   / search   esc back"
+	return "↑↓ move   enter inspect"
 }
 
 func (m Model) formatList(width int) string {
@@ -766,7 +766,7 @@ func (m Model) formatList(width int) string {
 func (m Model) formatDetailView() string {
 	width := max(m.width-4, 44)
 	if m.table == nil || m.formatIndex < 0 || m.formatIndex >= len(m.table.Formats) {
-		return m.pageView(pageHeader(width, "formats"), "esc back")
+		return m.pageView(pageHeader(width, "formats"), "")
 	}
 	format := m.table.Formats[m.formatIndex]
 	lines := []string{pageHeader(width, m.table.Table.Name, "formats", format.Name), "", searchActionBar([]actionBarItem{{key: "/", label: "Search", action: "search"}, {key: "esc", label: "Back", action: "back"}}, "", m.searchActive, m.searchQuery), "", valueStyle.Render("Required entry  " + credits(format.RequiredEntry)), "", sectionHeading("Chip denominations", width)}
@@ -776,7 +776,7 @@ func (m Model) formatDetailView() string {
 		}
 		lines = append(lines, chipStyle(chip.Color).Render("● "+chip.Label)+"  "+valueStyle.Render(credits(chip.Value)))
 	}
-	return m.pageView(strings.Join(lines, "\n"), "/ search   esc back")
+	return m.pageView(strings.Join(lines, "\n"), "")
 }
 
 func (m Model) playersView() string {
@@ -797,15 +797,15 @@ func (m Model) playersView() string {
 
 func playersFooter(canManage bool) string {
 	if canManage {
-		return "↑↓ move   a add player   / search   esc back"
+		return "↑↓ move   a add player"
 	}
-	return "↑↓ move   / search   esc back"
+	return "↑↓ move"
 }
 
 func (m Model) gamesView() string {
 	width := max(m.width-4, 44)
 	if m.table == nil {
-		return m.pageView(pageHeader(width, "tables", "games"), "esc back")
+		return m.pageView(pageHeader(width, "tables", "games"), "")
 	}
 	if m.loading {
 		return m.pageView(lipgloss.JoinVertical(lipgloss.Left,
@@ -821,7 +821,7 @@ func (m Model) gamesView() string {
 }
 
 func gamesFooter() string {
-	return "↑↓ move   enter inspect   / search   esc back"
+	return "↑↓ move   enter inspect"
 }
 
 func gamesActionItems() []actionBarItem {
@@ -858,7 +858,7 @@ func (m Model) gameList(width int) string {
 func (m Model) gameDetailView() string {
 	width := max(m.width-4, 44)
 	if m.table == nil || m.gameIndex < 0 || m.gameIndex >= len(m.table.Games) {
-		return m.pageView(pageHeader(width, "tables", "games"), "esc back")
+		return m.pageView(pageHeader(width, "tables", "games"), "")
 	}
 	game := m.table.Games[m.gameIndex]
 	lines := []string{
@@ -892,7 +892,7 @@ func (m Model) gameDetailView() string {
 	if game.Remarks != "" {
 		lines = append(lines, mutedStyle.Render("Note: "+game.Remarks))
 	}
-	return m.pageView(strings.Join(lines, "\n"), "/ search   esc back")
+	return m.pageView(strings.Join(lines, "\n"), "")
 }
 
 func (m Model) playerList(width int) string {
@@ -919,25 +919,25 @@ func (m Model) playerList(width int) string {
 }
 
 func (m Model) tableCreateView() string {
-	return m.centeredFormPage("tables", "Create a table", "Create", "esc back")
+	return m.centeredFormPage("tables", "Create a table", "Create", "")
 }
 
 func (m Model) formatCreateView() string {
 	if m.table == nil {
-		return m.pageView(pageHeader(max(m.width-4, 44), "formats"), "esc back")
+		return m.pageView(pageHeader(max(m.width-4, 44), "formats"), "")
 	}
-	return m.centeredFormPage(strings.Join([]string{"tables", m.table.Table.Name, "formats"}, " / "), "Create game format", "Create", "esc back")
+	return m.centeredFormPage(strings.Join([]string{"tables", m.table.Table.Name, "formats"}, " / "), "Create game format", "Create", "")
 }
 
 func (m Model) playerCreateView() string {
 	if m.table == nil {
-		return m.pageView(pageHeader(max(m.width-4, 44), "players"), "esc back")
+		return m.pageView(pageHeader(max(m.width-4, 44), "players"), "")
 	}
 	crumb := []string{"tables", m.table.Table.Name, "players"}
 	if m.recordQuickAdd {
 		crumb = []string{"tables", m.table.Table.Name, "record", "add player"}
 	}
-	return m.centeredFormPage(strings.Join(crumb, " / "), "Add player", "Create", "esc back")
+	return m.centeredFormPage(strings.Join(crumb, " / "), "Add player", "Create", "")
 }
 
 func (m Model) centeredFormPage(crumb, title, _ string, footer string) string {
@@ -952,7 +952,7 @@ func (m Model) centeredFormPage(crumb, title, _ string, footer string) string {
 func (m Model) recordGameView() string {
 	width := max(m.width-4, 44)
 	if m.table == nil {
-		return m.pageView(pageHeader(width, "record game"), "esc back")
+		return m.pageView(pageHeader(width, "record game"), "")
 	}
 	header := pageHeader(width, "tables", m.table.Table.Name, "record")
 	if m.loading {
@@ -980,20 +980,20 @@ func (m Model) recordGameView() string {
 func recordFooter(phase recordPhase, previewed bool) string {
 	switch phase {
 	case recordDetailsPhase:
-		return "tab next   enter continue   esc back"
+		return "tab next   enter continue"
 	case recordFormatPhase:
-		return "↑↓ move   enter choose format   esc back"
+		return "↑↓ move   enter choose format"
 	case recordPlayersPhase:
-		return "↑↓ move   space toggle   enter continue   esc back"
+		return "↑↓ move   space toggle   enter continue"
 	case recordChipCountsPhase:
-		return "tab next   enter next player   esc back"
+		return "tab next   enter next player"
 	case recordReviewPhase:
 		if previewed {
-			return "enter record game   esc back"
+			return "enter record game"
 		}
-		return "enter check balance   esc back"
+		return "enter check balance"
 	default:
-		return "esc back"
+		return ""
 	}
 }
 
@@ -1087,7 +1087,8 @@ func chipStyle(color string) lipgloss.Style {
 
 func (m *Model) resetTableCreateForm() {
 	m.tableForm = &tableFormValues{}
-	m.form = huh.NewForm(huh.NewGroup(newCenteredInput("Table name", "", "saturday-table", &m.tableForm.name, 48, false, publicTableName))).WithTheme(huh.ThemeFunc(centeredFormTheme)).WithShowHelp(false).WithShowErrors(false)
+	tableName := newCenteredInput("Table name", "", "saturday-table", &m.tableForm.name, 48, false, publicTableName).WithPrefix("#")
+	m.form = huh.NewForm(huh.NewGroup(tableName)).WithTheme(huh.ThemeFunc(centeredFormTheme)).WithShowHelp(false).WithShowErrors(false)
 	m.resizeForm()
 }
 

@@ -299,8 +299,8 @@ func TestLoginOmitsTaglineAndPinsFormHelp(t *testing.T) {
 		}
 	}
 	bottom := strings.Split(view, "\n")[model.height-1]
-	if !strings.Contains(bottom, "esc back") {
-		t.Fatalf("bottom help bar = %q, want login help", bottom)
+	if strings.Contains(bottom, "esc") || strings.Contains(bottom, "refresh") || strings.Contains(bottom, "search") {
+		t.Fatalf("bottom help bar exposes hidden shortcuts: %q", bottom)
 	}
 }
 
@@ -330,13 +330,17 @@ func TestUsersViewPinsHelpToTerminalBottom(t *testing.T) {
 	if len(lines) != model.height {
 		t.Fatalf("rendered lines = %d, want %d", len(lines), model.height)
 	}
-	if !strings.Contains(lines[len(lines)-1], "/ search") || strings.Contains(lines[len(lines)-1], "mouse click") {
-		t.Fatalf("bottom line = %q, want keyboard-only pinned help", lines[len(lines)-1])
+	bottom := lines[len(lines)-1]
+	if strings.Contains(bottom, "refresh") || strings.Contains(bottom, "search") || strings.Contains(bottom, "esc") || strings.Contains(bottom, "mouse click") {
+		t.Fatalf("bottom line exposes hidden shortcuts: %q", bottom)
 	}
-	for _, phrase := range []string{"~bluff", "/ users", "@bluff", "c  Create invite code", "@dealer", "MEMBER"} {
+	for _, phrase := range []string{"~bluff", "/ users", "@bluff", "c  Create invite code", "@dealer", "ADMIN"} {
 		if !strings.Contains(plainView, phrase) {
 			t.Errorf("users screen does not contain %q", phrase)
 		}
+	}
+	if strings.Contains(plainView, "@dealer MEMBER") {
+		t.Fatal("member row still renders a trailing MEMBER role")
 	}
 	if strings.Contains(model.View().Content, "▒▒▒") {
 		t.Fatal("users screen still renders the large Bluff logo")
@@ -456,6 +460,34 @@ func TestTableRecordFlowOffersQuickAddAndGameHistory(t *testing.T) {
 	quickAdd.screen = tableDetailScreen
 	if !strings.Contains(quickAdd.View().Content, "♛") {
 		t.Fatal("table host is missing the crown marker")
+	}
+}
+
+func TestTableCreatedMessageLeavesCompletedFormBeforeOpening(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+	model.screen, model.loading = tableCreateScreen, true
+	updated, _ := model.Update(tableCreatedMsg{table: api.TableSummary{ID: "table-1", Name: "#saturday-table"}})
+	got := updated.(Model)
+	if got.screen != tableDetailScreen {
+		t.Fatalf("screen after table creation = %v, want table detail", got.screen)
+	}
+	if !got.loading {
+		t.Fatal("new table should remain loading while it opens")
+	}
+}
+
+func TestTableLoadedMessageOpensDetailFromTableList(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+	model.screen, model.loading = tablesScreen, true
+	updated, _ := model.Update(tableLoadedMsg{table: api.TableDetail{Table: api.TableSummary{ID: "table-1", Name: "#saturday-table"}}})
+	got := updated.(Model)
+	if got.screen != tableDetailScreen {
+		t.Fatalf("screen after opening table = %v, want table detail", got.screen)
+	}
+	if got.loading || got.table == nil {
+		t.Fatal("opened table did not finish loading")
 	}
 }
 
@@ -596,6 +628,26 @@ func TestCenteredInputRendersValidationErrorBelowField(t *testing.T) {
 	borderIndex := strings.LastIndex(view, "━")
 	if errorIndex < 0 || errorIndex < borderIndex {
 		t.Fatalf("field error is not below its border: %q", view)
+	}
+}
+
+func TestCenteredInputRendersVisualTablePrefix(t *testing.T) {
+	t.Parallel()
+	value := ""
+	input := newCenteredInput("Table name", "", "saturday-table", &value, 48, false, publicTableName).WithPrefix("#")
+	input.WithTheme(huh.ThemeFunc(centeredFormTheme))
+	input.WithKeyMap(huh.NewDefaultKeyMap())
+	input.WithWidth(40)
+	input.Focus()
+
+	if view := ansi.Strip(input.View()); !strings.Contains(view, "#saturday-table") {
+		t.Fatalf("table placeholder is missing visual prefix: %q", view)
+	}
+	for _, character := range "friday-table" {
+		_, _ = input.Update(tea.KeyPressMsg(tea.Key{Code: character, Text: string(character)}))
+	}
+	if view := ansi.Strip(input.View()); !strings.Contains(view, "#friday-table") {
+		t.Fatalf("table value is missing visual prefix: %q", view)
 	}
 }
 

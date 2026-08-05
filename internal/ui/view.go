@@ -123,7 +123,7 @@ func (m Model) loginView() string {
 	}
 	parts = append(parts, m.form.View())
 	body := lipgloss.JoinVertical(lipgloss.Center, parts...)
-	return m.screenView(body, "tab next   enter continue   esc back")
+	return m.screenView(body, "tab next   enter continue")
 }
 
 func (m Model) inviteCodeView() string {
@@ -136,7 +136,7 @@ func (m Model) inviteCodeView() string {
 	}
 	parts = append(parts, m.form.View())
 	body := lipgloss.JoinVertical(lipgloss.Center, parts...)
-	return m.screenView(body, "enter continue   esc back")
+	return m.screenView(body, "enter continue")
 }
 
 func (m Model) inviteAccountView() string {
@@ -154,7 +154,7 @@ func (m Model) inviteAccountView() string {
 	}
 	parts = append(parts, m.form.View())
 	body := lipgloss.JoinVertical(lipgloss.Center, parts...)
-	return m.screenView(body, "tab next   enter create account   esc back")
+	return m.screenView(body, "tab next   enter create account")
 }
 
 func (m Model) aboutView() string {
@@ -173,7 +173,7 @@ func (m Model) aboutView() string {
 		"",
 		brandStyle.Render(version),
 	)
-	return m.screenView(body, "enter / esc / q back")
+	return m.screenView(body, "enter   q back")
 }
 
 func (m Model) appMenuView() string {
@@ -243,8 +243,18 @@ func pageHeader(width int, breadcrumbs ...string) string {
 }
 
 func (m Model) identityLine() string {
-	return valueStyle.Render("@"+m.user.Username) + "  " +
-		lipgloss.NewStyle().Bold(true).Foreground(colorFuchsia).Render(strings.ToUpper(m.user.Role))
+	identity := valueStyle.Render("@" + m.user.Username)
+	if role := userRoleLabel(m.user.Role); role != "" {
+		identity += "  " + lipgloss.NewStyle().Bold(true).Foreground(colorFuchsia).Render(role)
+	}
+	return identity
+}
+
+func userRoleLabel(role string) string {
+	if strings.EqualFold(strings.TrimSpace(role), "admin") {
+		return "ADMIN"
+	}
+	return ""
 }
 
 func (m Model) userList(width int) string {
@@ -268,8 +278,10 @@ func (m Model) userList(width int) string {
 			marker = "› "
 			style = lipgloss.NewStyle().Bold(true).Foreground(colorFuchsia)
 		}
-		role := strings.ToUpper(user.Role)
-		line := fmt.Sprintf("%-4s %-*s %s", marker, usernameWidth, "@"+truncate(user.Username, usernameWidth-1), role)
+		line := fmt.Sprintf("%-4s %-*s", marker, usernameWidth, "@"+truncate(user.Username, usernameWidth-1))
+		if role := userRoleLabel(user.Role); role != "" {
+			line += " " + role
+		}
 		lines = append(lines, style.Render(line))
 	}
 	lines = append(lines, "", mutedStyle.Render(fmt.Sprintf("%d users", len(visible))))
@@ -277,7 +289,7 @@ func (m Model) userList(width int) string {
 }
 
 func usersFooter() string {
-	return "↑↓ move   c invite   r refresh   / search   esc back"
+	return "↑↓ move   c invite"
 }
 
 func (m Model) loadingViewBody() string {
@@ -436,7 +448,7 @@ func (m Model) dashboardHelp() string {
 	if m.loading {
 		return m.status
 	}
-	return "r refresh   l logout   q quit   " + version
+	return "l logout   q quit   " + version
 }
 
 func brandLogo(width int) string {

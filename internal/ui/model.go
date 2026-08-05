@@ -492,6 +492,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tableLoadedMsg:
+		if m.screen == tablesScreen {
+			// Opening an existing table starts from the list screen. Switch views
+			// only after the read model arrives so the list never flashes back over
+			// a successfully loaded detail page.
+			m.screen = tableDetailScreen
+		}
 		m.loading, m.table, m.err, m.notice = false, &msg.table, nil, ""
 		if m.recordQuickAdd && m.recordQuickAddID != "" {
 			for index, player := range m.table.Players {
@@ -508,6 +514,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tableCreatedMsg:
 		m.tables = append(m.tables, msg.table)
 		m.tableIndex = len(m.tables) - 1
+		// Move off the completed form before loading the new table. Otherwise the
+		// form remains in huh.StateCompleted and the next keypress submits it again,
+		// producing a misleading duplicate-table error after a successful create.
+		m.screen = tableDetailScreen
 		m.loading, m.status, m.err = true, "Opening table", nil
 		return m, tea.Batch(m.spinner.Tick, m.tableCmd(msg.table.ID))
 	case tablePlayerCreatedMsg:
