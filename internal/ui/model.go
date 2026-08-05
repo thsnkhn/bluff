@@ -120,6 +120,7 @@ type appMenuItem struct {
 // API captures the authenticated operations used by the terminal client.
 type API interface {
 	Health(context.Context) error
+	HealthStatus(context.Context) (api.HealthStatus, error)
 	Login(context.Context, string, string) (api.Session, error)
 	ValidateInvitation(context.Context, string) error
 	RedeemInvitation(context.Context, string, string, string) (api.Session, error)
@@ -137,6 +138,12 @@ type API interface {
 	Logout(context.Context, string) error
 }
 
+// UpdateInstaller installs a verified release and starts the replacement
+// process. Keeping it behind an interface makes the boot flow cheap to test.
+type UpdateInstaller interface {
+	Install(context.Context, api.ClientRelease) error
+}
+
 // CredentialStore persists the bearer token outside the application files.
 type CredentialStore interface {
 	Load(context.Context) (string, error)
@@ -149,6 +156,7 @@ type Model struct {
 	api                API
 	store              CredentialStore
 	build              BuildInfo
+	updater            UpdateInstaller
 	screen             screen
 	width              int
 	height             int
@@ -194,10 +202,11 @@ type Model struct {
 	notice             string
 	connected          bool
 	checkingConnection bool
+	updateAvailable    *api.ClientRelease
 }
 
 // New constructs the Bluff terminal application.
-func New(client API, store CredentialStore, build BuildInfo) Model {
+func New(client API, store CredentialStore, build BuildInfo, installers ...UpdateInstaller) Model {
 	busy := spinner.New(spinner.WithSpinner(spinner.MiniDot))
 	busy.Style = lipgloss.NewStyle().Foreground(colorFuchsia)
 	model := Model{
@@ -208,6 +217,9 @@ func New(client API, store CredentialStore, build BuildInfo) Model {
 		spinner: busy,
 		loading: true,
 		status:  "Opening the table",
+	}
+	if len(installers) > 0 {
+		model.updater = installers[0]
 	}
 	model.resetLoginForm()
 	return model
@@ -413,6 +425,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateTableMouse(msg)
 	case sessionRestoredMsg:
 		m.loading = false
+		m.updateAvailable = msg.update
 		m.token, m.user, m.bootstrap = msg.token, msg.user, msg.bootstrap
 		m.screen, m.err, m.connected = appMenuScreen, nil, true
 		m.tables = msg.bootstrap.Tables
@@ -422,6 +435,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case loginRequiredMsg:
 		m.loading, m.screen, m.err = false, homeScreen, msg.err
 		m.connected = msg.connected
+		m.updateAvailable = msg.update
 		m.resetLoginForm()
 		m.resizeForm()
 		return m, nil
@@ -441,6 +455,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.invite.password = ""
 		}
 		return m, nil
+	case updateRestartedMsg:
+		return m, tea.Quit
 	case invitationValidatedMsg:
 		m.loading, m.screen, m.err = false, inviteAccountScreen, nil
 		m.resetInviteAccountForm()
@@ -771,13 +787,16 @@ type sessionRestoredMsg struct {
 	token     string
 	user      api.User
 	bootstrap api.Bootstrap
+	update    *api.ClientRelease
 }
 
 type loginRequiredMsg struct {
 	err       error
 	connected bool
+	update    *api.ClientRelease
 }
 type connectionCheckedMsg struct{ err error }
+type updateRestartedMsg struct{}
 type loginSucceededMsg sessionRestoredMsg
 type invitationValidatedMsg struct{}
 type operationFailedMsg struct{ err error }
@@ -790,27 +809,33 @@ func (m Model) restoreSessionCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), operationTimeout)
 		defer cancel()
-		connectionErr := m.api.Health(ctx)
+		health, connectionErr := m.api.HealthStatus(ctx)
+		update := m.newerRelease(health.ClientVersion)
+		if update != nil && m.updater != nil {
+			if err := m.updater.Install(ctx, *update); err == nil {
+				return updateRestartedMsg{}
+			}
+		}
 		token, err := m.store.Load(ctx)
 		if errors.Is(err, credentials.ErrNotFound) {
-			return loginRequiredMsg{err: connectionErr, connected: connectionErr == nil}
+			return loginRequiredMsg{err: connectionErr, connected: connectionErr == nil, update: update}
 		}
 		if err != nil {
-			return loginRequiredMsg{err: fmt.Errorf("could not open the system keychain: %w", err), connected: connectionErr == nil}
+			return loginRequiredMsg{err: fmt.Errorf("could not open the system keychain: %w", err), connected: connectionErr == nil, update: update}
 		}
 		user, err := m.api.Me(ctx, token)
 		if err != nil {
 			if api.IsUnauthorized(err) {
 				_ = m.store.Delete(ctx)
-				return loginRequiredMsg{err: errors.New("your saved session expired; sign in again"), connected: connectionErr == nil}
+				return loginRequiredMsg{err: errors.New("your saved session expired; sign in again"), connected: connectionErr == nil, update: update}
 			}
-			return loginRequiredMsg{err: err, connected: connectionErr == nil}
+			return loginRequiredMsg{err: err, connected: connectionErr == nil, update: update}
 		}
 		bootstrap, err := m.api.Bootstrap(ctx, token)
 		if err != nil {
-			return loginRequiredMsg{err: err, connected: connectionErr == nil}
+			return loginRequiredMsg{err: err, connected: connectionErr == nil, update: update}
 		}
-		return sessionRestoredMsg{token: token, user: user, bootstrap: bootstrap}
+		return sessionRestoredMsg{token: token, user: user, bootstrap: bootstrap, update: update}
 	}
 }
 
@@ -818,7 +843,8 @@ func (m Model) checkConnectionCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), operationTimeout)
 		defer cancel()
-		return connectionCheckedMsg{err: m.api.Health(ctx)}
+		_, err := m.api.HealthStatus(ctx)
+		return connectionCheckedMsg{err: err}
 	}
 }
 

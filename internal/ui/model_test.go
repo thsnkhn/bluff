@@ -18,9 +18,16 @@ import (
 type fakeAPI struct {
 	bootstrap api.Bootstrap
 	users     []api.User
+	health    api.HealthStatus
 }
 
 func (f fakeAPI) Health(context.Context) error { return nil }
+func (f fakeAPI) HealthStatus(context.Context) (api.HealthStatus, error) {
+	if f.health.Status == "" {
+		return api.HealthStatus{Status: "ok"}, nil
+	}
+	return f.health, nil
+}
 func (f fakeAPI) Login(context.Context, string, string) (api.Session, error) {
 	return api.Session{}, errors.New("not implemented")
 }
@@ -66,6 +73,15 @@ type fakeStore struct {
 	err   error
 }
 
+type fakeInstaller struct {
+	release api.ClientRelease
+}
+
+func (f *fakeInstaller) Install(_ context.Context, release api.ClientRelease) error {
+	f.release = release
+	return nil
+}
+
 func (f fakeStore) Load(context.Context) (string, error) { return f.token, f.err }
 func (f fakeStore) Save(context.Context, string) error   { return nil }
 func (f fakeStore) Delete(context.Context) error         { return nil }
@@ -97,6 +113,19 @@ func TestRestoreSessionCommands(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRestoreSessionRestartsAfterNewerRelease(t *testing.T) {
+	t.Parallel()
+	installer := &fakeInstaller{}
+	model := New(fakeAPI{health: api.HealthStatus{Status: "ok", ClientVersion: "v0.1.4"}}, fakeStore{err: credentials.ErrNotFound}, BuildInfo{Version: "v0.1.3"}, installer)
+	msg := model.restoreSessionCmd()()
+	if _, ok := msg.(updateRestartedMsg); !ok {
+		t.Fatalf("message = %T, want updateRestartedMsg", msg)
+	}
+	if installer.release.Version != "v0.1.4" {
+		t.Fatalf("installer version = %q, want v0.1.4", installer.release.Version)
 	}
 }
 

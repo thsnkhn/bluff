@@ -348,11 +348,22 @@ func (m Model) helpBar(actions string) string {
 }
 
 func (m Model) footerIdentity(connection string) string {
+	update := ""
+	if m.updateAvailable != nil {
+		update = lipgloss.NewStyle().Foreground(colorFuchsia).Render("↑ update " + m.updateAvailable.Version)
+	}
 	if m.user.Username == "" {
-		return connection
+		if update == "" {
+			return connection
+		}
+		return connection + mutedStyle.Render("  ·  ") + update
 	}
 	separator := mutedStyle.Render("  ·  ")
-	return connection + separator + m.identityLine()
+	identity := connection + separator + m.identityLine()
+	if update != "" {
+		identity += separator + update
+	}
+	return identity
 }
 
 func (m Model) dashboardView() string {

@@ -14,6 +14,21 @@ type Session struct {
 	ExpiresAt string `json:"expiresAt"`
 }
 
+// HealthStatus is the lightweight service status returned during startup.
+type HealthStatus struct {
+	Status        string `json:"status"`
+	ClientVersion string `json:"clientVersion"`
+}
+
+// ClientRelease describes a verified platform archive available to the updater.
+type ClientRelease struct {
+	Version     string `json:"version"`
+	ReleaseURL  string `json:"releaseUrl"`
+	AssetName   string `json:"assetName"`
+	DownloadURL string `json:"downloadUrl"`
+	SHA256      string `json:"sha256"`
+}
+
 // Invitation is a single-use code created by an administrator.
 type Invitation struct {
 	Code      string `json:"code"`

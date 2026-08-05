@@ -15,6 +15,7 @@ import (
 	"github.com/thsnkhn/bluff/internal/api"
 	"github.com/thsnkhn/bluff/internal/credentials"
 	"github.com/thsnkhn/bluff/internal/ui"
+	"github.com/thsnkhn/bluff/internal/updater"
 )
 
 var (
@@ -43,7 +44,7 @@ func main() {
 	}
 
 	store := credentials.NewKeyringStore(baseURL)
-	model := ui.New(client, store, ui.BuildInfo{Version: version})
+	model := ui.New(client, store, ui.BuildInfo{Version: version}, updater.New())
 	program := tea.NewProgram(model, tea.WithContext(context.Background()))
 	if _, err := program.Run(); err != nil {
 		log.Fatalf("run bluff: %v", err)

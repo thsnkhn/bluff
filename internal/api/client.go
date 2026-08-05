@@ -29,16 +29,21 @@ type Client struct {
 
 // Health verifies that the Bluff service is reachable.
 func (c *Client) Health(ctx context.Context) error {
-	result, err := request[struct {
-		Status string `json:"status"`
-	}](ctx, c, http.MethodGet, "/health", "", nil)
+	_, err := c.HealthStatus(ctx)
+	return err
+}
+
+// HealthStatus returns service reachability and the latest client version in
+// the same request used to establish the startup connection.
+func (c *Client) HealthStatus(ctx context.Context) (HealthStatus, error) {
+	result, err := request[HealthStatus](ctx, c, http.MethodGet, "/health", "", nil)
 	if err != nil {
-		return err
+		return result, err
 	}
 	if result.Status != "ok" {
-		return fmt.Errorf("bluff service reported status %q", result.Status)
+		return result, fmt.Errorf("bluff service reported status %q", result.Status)
 	}
-	return nil
+	return result, nil
 }
 
 // Error is a problem returned by the Bluff API.

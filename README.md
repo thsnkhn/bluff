@@ -16,6 +16,10 @@ brew install thsnkhn/bluff/bluff
 
 Upgrade later with `brew update && brew upgrade bluff`.
 
+Bluff checks the API for the latest published version while it starts. If an
+update is available, it verifies and installs the matching release archive
+before relaunching.
+
 Or install the latest version from source:
 
 ```bash
