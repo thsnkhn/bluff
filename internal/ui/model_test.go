@@ -497,6 +497,77 @@ func TestTableRecordFlowOffersQuickAddAndGameHistory(t *testing.T) {
 	}
 }
 
+func TestEscapingTablePopupsKeepsTheirSection(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+	model.table = &api.TableDetail{Table: api.TableSummary{ID: "table-1"}}
+
+	model.screen = formatCreateScreen
+	updated, _, handled := model.updateTableKey("esc")
+	if !handled || updated.(Model).screen != formatsScreen {
+		t.Fatalf("format popup escape = screen %v, handled=%v; want formats screen", updated.(Model).screen, handled)
+	}
+
+	model.screen = playerCreateScreen
+	updated, _, handled = model.updateTableKey("esc")
+	if !handled || updated.(Model).screen != playersScreen {
+		t.Fatalf("player popup escape = screen %v, handled=%v; want players screen", updated.(Model).screen, handled)
+	}
+}
+
+func TestPlayerDeleteRequiresConfirmation(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+	model.screen, model.loading = playerDetailScreen, false
+	model.table = &api.TableDetail{
+		Table:     api.TableSummary{ID: "table-1"},
+		CanManage: true,
+		Players:   []api.TablePlayer{{ID: "player-1", Name: "alice"}},
+	}
+
+	updated, cmd, handled := model.updateTableKey("d")
+	first := updated.(Model)
+	if !handled || cmd != nil || !first.playerDeleteConfirm {
+		t.Fatalf("first delete press = handled=%v cmd=%v confirm=%v; want armed confirmation", handled, cmd != nil, first.playerDeleteConfirm)
+	}
+
+	updated, cmd, handled = first.updateTableKey("d")
+	second := updated.(Model)
+	if !handled || cmd == nil || second.playerDeleteConfirm || !second.loading {
+		t.Fatalf("second delete press = handled=%v cmd=%v confirm=%v loading=%v; want delete command", handled, cmd != nil, second.playerDeleteConfirm, second.loading)
+	}
+}
+
+func TestVerticalChipCountersMoveAndAdjust(t *testing.T) {
+	t.Parallel()
+	values := []string{"0", "3"}
+	row := newVerticalChipCounters([]api.ChipDenomination{
+		{Label: "white", Color: "white", Value: 10},
+		{Label: "red", Color: "red", Value: 50},
+	}, &values)
+	row.Focus()
+
+	_, _ = row.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyRight}))
+	if values[0] != "1" {
+		t.Fatalf("right arrow count = %q, want 1", values[0])
+	}
+	_, _ = row.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	_, _ = row.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyRight, Mod: tea.ModShift}))
+	if row.active != 1 || values[1] != "13" {
+		t.Fatalf("shift-right result = active %d values %#v, want active 1 and second count 13", row.active, values)
+	}
+	_, _ = row.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyLeft, Mod: tea.ModShift}))
+	if values[1] != "3" {
+		t.Fatalf("shift-left count = %q, want 3", values[1])
+	}
+	view := ansi.Strip(row.View())
+	for _, want := range []string{"white 10", "red 50", "- 1 +", "- 3 +"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("counter view missing %q:\n%s", want, view)
+		}
+	}
+}
+
 func TestTableWorkspaceOverviewUsesChartsAndLocalNavigation(t *testing.T) {
 	t.Parallel()
 	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})

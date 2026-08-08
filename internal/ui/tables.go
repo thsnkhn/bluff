@@ -62,8 +62,11 @@ func (m Model) tableParentScreen() screen {
 		return recordGameScreen
 	}
 	switch m.screen {
-	case formatCreateScreen, formatsScreen, formatDetailScreen, playerCreateScreen, playerDetailScreen, playersScreen,
-		gamesScreen, gameDetailScreen:
+	case formatCreateScreen:
+		return formatsScreen
+	case playerCreateScreen, playerDetailScreen:
+		return playersScreen
+	case formatsScreen, formatDetailScreen, playersScreen, gamesScreen, gameDetailScreen:
 		return tableDetailScreen
 	case recordGameScreen:
 		return tableDetailScreen
@@ -225,6 +228,9 @@ func (m Model) updateTableKey(key string) (tea.Model, tea.Cmd, bool) {
 			}
 			return m, nil, true
 		}
+		if m.playerDeleteConfirm && key != "d" {
+			m.playerDeleteConfirm = false
+		}
 		if key == "enter" && m.form != nil && m.table.CanManage && m.playerCanEdit() {
 			updated, cmd := m.handleTableFormCompleted()
 			return updated, cmd, true
@@ -234,6 +240,11 @@ func (m Model) updateTableKey(key string) (tea.Model, tea.Cmd, bool) {
 			return m, tea.Batch(m.spinner.Tick, m.createPlayerInviteCmd()), true
 		}
 		if key == "d" && m.table.CanManage && !m.playerHasEntries() {
+			if !m.playerDeleteConfirm {
+				m.playerDeleteConfirm = true
+				return m, nil, true
+			}
+			m.playerDeleteConfirm = false
 			m.loading, m.status, m.err = true, "Deleting player", nil
 			return m, tea.Batch(m.spinner.Tick, m.deletePlayerCmd()), true
 		}
@@ -1289,8 +1300,14 @@ func (m Model) playerDetailView() string {
 			popupActions = append([]actionBarItem{{key: "x", label: "Disable", action: "disable", accent: true}}, popupActions...)
 			footer = "x disable   " + footer
 		} else {
-			popupActions = append([]actionBarItem{{key: "d", label: "Delete", action: "delete", accent: true}}, popupActions...)
-			footer = "d delete   " + footer
+			deleteLabel := "Delete"
+			deleteHelp := "d delete"
+			if m.playerDeleteConfirm {
+				deleteLabel = "Confirm Delete"
+				deleteHelp = "d confirm delete"
+			}
+			popupActions = append([]actionBarItem{{key: "d", label: deleteLabel, action: "delete", accent: true}}, popupActions...)
+			footer = deleteHelp + "   " + footer
 		}
 	}
 	return m.formPopupWithActions(background.playersView(), "Player", body, footer, popupActions)
@@ -1430,7 +1447,9 @@ func (m Model) recordGameView() string {
 		background.recordPhase = recordPlayersPhase
 		background.form = nil
 		background.err = nil
-		return m.formPopupSizedWithActions(background.recordGameView(), "Player earnings", m.recordChipCountView(), recordFooter(m.recordPhase, m.recordPreview != nil), 58, []actionBarItem{
+		player := m.table.Players[m.recordPlayerIndex]
+		popupTitle := "Player earnings · " + displayTablePlayerName(player, m.table.Table.HostUsername)
+		return m.formPopupSizedWithActions(background.recordGameView(), popupTitle, m.recordChipCountView(), recordFooter(m.recordPhase, m.recordPreview != nil), 58, []actionBarItem{
 			{key: "enter", label: "Save", action: "submit", accent: true},
 			{key: "esc", label: "Close", action: "close"},
 		})
@@ -1471,7 +1490,7 @@ func recordFooter(phase recordPhase, previewed bool) string {
 	case recordPlayersPhase:
 		return "↑↓ move   space toggle   enter edit/continue   c add player"
 	case recordChipCountsPhase:
-		return "tab next   enter next player"
+		return "↑↓ move   ←→ adjust   shift+←→ ±10   enter save   esc close"
 	case recordReviewPhase:
 		if previewed {
 			return "enter record game"
@@ -1523,7 +1542,9 @@ func (m Model) recordPlayerList(width int) string {
 
 func (m Model) recordChipCountView() string {
 	format := m.table.Formats[m.recordFormatIndex]
-	player := m.table.Players[m.recordPlayerIndex]
+	// Keep the reusable counter field inside the popup's content frame at
+	// every terminal width.
+	m.form.WithWidth(max(popupWidth(m.width, 58)-8, 20))
 	finalValue := 0
 	for index, chip := range format.Chips {
 		if index >= len(m.recordChipValues) {
@@ -1535,7 +1556,6 @@ func (m Model) recordChipCountView() string {
 		}
 	}
 	return lipgloss.JoinVertical(lipgloss.Left,
-		brandStyle.Render(fmt.Sprintf("Final chips · %s", displayTablePlayerName(player, m.table.Table.HostUsername))),
 		mutedStyle.Render(fmt.Sprintf("%s  ·  %s", format.Name, credits(format.RequiredEntry))),
 		valueStyle.Render(fmt.Sprintf("Final value  %s  ·  P/L  %s", credits(finalValue), signedCredits(finalValue-format.RequiredEntry))),
 		"", m.form.View())
@@ -1615,12 +1635,13 @@ func (m *Model) resetPlayerCreateForm() {
 	m.playerForm = &playerFormValues{}
 	m.form = huh.NewForm(huh.NewGroup(
 		newCenteredInput("Player name", "", "luna", &m.playerForm.name, 48, false, required("enter a player name")).WithLeftAlign(true),
-		huh.NewConfirm().Title("Generate invite code").Affirmative("Yes").Negative("No").Value(&m.playerForm.generateInvite),
+		popupConfirm("Generate invite code", &m.playerForm.generateInvite),
 	)).WithTheme(huh.ThemeFunc(popupFormTheme)).WithShowHelp(false).WithShowErrors(false)
 	m.resizeForm()
 }
 
 func (m *Model) resetPlayerEditForm() {
+	m.playerDeleteConfirm = false
 	if m.table == nil || m.playerIndex < 0 || m.playerIndex >= len(m.table.Players) {
 		m.form = nil
 		return
@@ -1635,7 +1656,7 @@ func (m *Model) resetPlayerEditForm() {
 		newCenteredInput("Player name", "", player.Name, &m.playerForm.name, 48, false, required("enter a player name")).WithLeftAlign(true),
 	}
 	if m.playerInviteCodeForCurrentPlayer() == "" {
-		fields = append(fields, huh.NewConfirm().Title("Generate invite code").Affirmative("Yes").Negative("No").Value(&m.playerForm.generateInvite))
+		fields = append(fields, popupConfirm("Generate invite code", &m.playerForm.generateInvite))
 	}
 	m.form = huh.NewForm(huh.NewGroup(fields...)).WithTheme(huh.ThemeFunc(popupFormTheme)).WithShowHelp(false).WithShowErrors(false)
 	m.resizeForm()
@@ -1664,16 +1685,8 @@ func (m *Model) resetRecordChipForm() {
 		values = append(values, value)
 	}
 	m.recordChipValues = values
-	chipSpecs := make([]chipInputSpec, 0, len(format.Chips))
-	for index, chip := range format.Chips {
-		chipSpecs = append(chipSpecs, chipInputSpec{
-			color:       chip.Color,
-			placeholder: "value",
-			value:       &m.recordChipValues[index],
-			validate:    nonNegativeIntegerText,
-		})
-	}
-	m.form = huh.NewForm(huh.NewGroup(newHorizontalChipInputs(chipSpecs))).WithTheme(huh.ThemeFunc(popupFormTheme)).WithShowHelp(false).WithShowErrors(false)
+	m.form = huh.NewForm(huh.NewGroup(newVerticalChipCounters(format.Chips, &m.recordChipValues))).
+		WithTheme(huh.ThemeFunc(popupFormTheme)).WithShowHelp(false).WithShowErrors(false)
 	m.resizeForm()
 }
 

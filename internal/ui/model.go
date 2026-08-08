@@ -163,61 +163,62 @@ type CredentialStore interface {
 
 // Model is the root Bubble Tea model.
 type Model struct {
-	api                API
-	store              CredentialStore
-	build              BuildInfo
-	updater            UpdateInstaller
-	screen             screen
-	width              int
-	height             int
-	spinner            spinner.Model
-	form               *huh.Form
-	login              *loginValues
-	invite             *inviteValues
-	loading            bool
-	status             string
-	err                error
-	token              string
-	user               api.User
-	bootstrap          api.Bootstrap
-	homeIndex          int
-	appIndex           int
-	usersIndex         int
-	usersActionHover   string
-	users              []api.User
-	tables             []api.TableSummary
-	table              *api.TableDetail
-	tableIndex         int
-	tableNavIndex      int
-	formatIndex        int
-	playerIndex        int
-	gameIndex          int
-	tablesActionHover  string
-	formatActionHover  string
-	playerActionHover  string
-	tableForm          *tableFormValues
-	formatForm         *formatFormValues
-	playerForm         *playerFormValues
-	recordDetails      *recordDetailsValues
-	recordPhase        recordPhase
-	recordFormatIndex  int
-	recordPlayerIndex  int
-	recordSelected     map[string]bool
-	recordCounts       map[string]map[string]int
-	recordEntered      map[string]bool
-	recordChipValues   []string
-	recordPreview      *api.TableGame
-	recordQuickAdd     bool
-	recordQuickAddID   string
-	playerInviteCodes  map[string]string
-	playerInvitePopup  bool
-	searchActive       bool
-	searchQuery        string
-	notice             string
-	pendingTableNotice string
-	connected          bool
-	checkingConnection bool
-	updateAvailable    *api.ClientRelease
+	api                 API
+	store               CredentialStore
+	build               BuildInfo
+	updater             UpdateInstaller
+	screen              screen
+	width               int
+	height              int
+	spinner             spinner.Model
+	form                *huh.Form
+	login               *loginValues
+	invite              *inviteValues
+	loading             bool
+	status              string
+	err                 error
+	token               string
+	user                api.User
+	bootstrap           api.Bootstrap
+	homeIndex           int
+	appIndex            int
+	usersIndex          int
+	usersActionHover    string
+	users               []api.User
+	tables              []api.TableSummary
+	table               *api.TableDetail
+	tableIndex          int
+	tableNavIndex       int
+	formatIndex         int
+	playerIndex         int
+	gameIndex           int
+	tablesActionHover   string
+	formatActionHover   string
+	playerActionHover   string
+	tableForm           *tableFormValues
+	formatForm          *formatFormValues
+	playerForm          *playerFormValues
+	recordDetails       *recordDetailsValues
+	recordPhase         recordPhase
+	recordFormatIndex   int
+	recordPlayerIndex   int
+	recordSelected      map[string]bool
+	recordCounts        map[string]map[string]int
+	recordEntered       map[string]bool
+	recordChipValues    []string
+	recordPreview       *api.TableGame
+	recordQuickAdd      bool
+	recordQuickAddID    string
+	playerInviteCodes   map[string]string
+	playerInvitePopup   bool
+	playerDeleteConfirm bool
+	searchActive        bool
+	searchQuery         string
+	notice              string
+	pendingTableNotice  string
+	connected           bool
+	checkingConnection  bool
+	updateAvailable     *api.ClientRelease
 }
 
 // New constructs the Bluff terminal application.
@@ -854,12 +855,19 @@ func centeredFormTheme(isDark bool) *huh.Styles {
 
 func popupFormTheme(isDark bool) *huh.Styles {
 	styles := huh.ThemeCharm(isDark)
-	// Keep popup fields compact. The default two-line group separator leaves
-	// an unnecessary gap between the buy-in and chip rows.
-	styles.FieldSeparator = lipgloss.NewStyle().SetString("\n")
-	// Match Huh's focused treatment: only the active field gets the left edge
-	// marker. Popup fields do not use underlines.
-	styles.Focused.Base = styles.Focused.Base.BorderLeft(true).BorderBottom(false).PaddingLeft(0).Align(lipgloss.Left)
+	// Keep a deliberate breathing space between each popup field. Chip rows are
+	// one field, so their four-column layout stays compact within the group.
+	styles.FieldSeparator = lipgloss.NewStyle().SetString("\n\n")
+	// Use Lip Gloss's normal single-line edge for the active field. Huh's
+	// default uses a thick border (┃); the normal edge (│) matches the lighter
+	// rules used throughout Bluff while keeping the focus state clear.
+	styles.Focused.Base = styles.Focused.Base.
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(colorFuchsia).
+		BorderLeft(true).
+		BorderBottom(false).
+		PaddingLeft(0).
+		Align(lipgloss.Left)
 	styles.Blurred.Base = styles.Blurred.Base.BorderLeft(false).BorderBottom(false).PaddingLeft(0).Align(lipgloss.Left)
 	leftAlignField := func(field *huh.FieldStyles) {
 		field.Title = field.Title.Align(lipgloss.Left)
@@ -872,9 +880,24 @@ func popupFormTheme(isDark bool) *huh.Styles {
 	}
 	leftAlignField(&styles.Focused)
 	leftAlignField(&styles.Blurred)
+	// Confirm choices use the same left edge as the rest of the popup. Keep
+	// their right breathing room, but do not indent the Yes/No labels.
+	styles.Focused.FocusedButton = styles.Focused.FocusedButton.PaddingLeft(0)
+	styles.Focused.BlurredButton = styles.Focused.BlurredButton.PaddingLeft(0)
+	styles.Blurred.FocusedButton = styles.Blurred.FocusedButton.PaddingLeft(0)
+	styles.Blurred.BlurredButton = styles.Blurred.BlurredButton.PaddingLeft(0)
 	styles.Form.Base = styles.Form.Base.Align(lipgloss.Left)
 	styles.Group.Base = styles.Group.Base.Align(lipgloss.Left)
 	return styles
+}
+
+func popupConfirm(title string, value *bool) *huh.Confirm {
+	return huh.NewConfirm().
+		Title(title).
+		Affirmative("Yes").
+		Negative("No").
+		Value(value).
+		WithButtonAlignment(lipgloss.Left)
 }
 
 func (m *Model) resizeForm() {
