@@ -86,6 +86,7 @@ type GameFormat struct {
 type TablePlayer struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
+	Username string `json:"username,omitempty"`
 	Active   bool   `json:"active"`
 	Standing int    `json:"standing"`
 }

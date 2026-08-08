@@ -17,6 +17,8 @@ type centeredInput struct {
 	placeholder string
 	prefix      string
 	width       int
+	inline      bool
+	leftAligned bool
 }
 
 func newCenteredInput(
@@ -33,8 +35,10 @@ func newCenteredInput(
 		Description(description).
 		Prompt("").
 		Placeholder(placeholder).
-		Value(value).
-		Validate(validate)
+		Value(value)
+	if validate != nil {
+		input.Validate(validate)
+	}
 	if charLimit > 0 {
 		input.CharLimit(charLimit)
 	}
@@ -50,15 +54,25 @@ func (input *centeredInput) Update(msg tea.Msg) (huh.Model, tea.Cmd) {
 }
 
 func (input *centeredInput) View() string {
+	if input.inline {
+		view := input.Input.View()
+		if err := input.Error(); err != nil {
+			view += "\n" + errorStyle.Render(friendlyError(err))
+		}
+		return view
+	}
 	lines := strings.Split(input.Input.View(), "\n")
-	textLine := len(lines) - 2 // The bottom border is the final line.
+	textLine := len(lines) - 2 // Centered forms keep the bottom border as the final line.
+	if input.leftAligned {
+		textLine = len(lines) - 1 // Popup fields use Huh's left focus border only.
+	}
 	for index, line := range lines {
 		if index == textLine {
 			if *input.value == "" && input.prefix != "" {
 				// Huh reserves a cursor cell when it renders an empty input, which
 				// can clip the last placeholder character at narrow widths. Render
 				// the complete public identifier ourselves in that state.
-				lines[index] = centeredLine(mutedStyle.Render(input.prefix+input.placeholder), input.width)
+				lines[index] = input.alignLine(mutedStyle.Render(input.prefix + input.placeholder))
 				continue
 			}
 			plain := ansi.Strip(line)
@@ -68,25 +82,34 @@ func (input *centeredInput) View() string {
 			cursorBalance := ""
 			if *input.value != "" {
 				visible = ansi.StringWidth(*input.value) + 1 // Preserve the cursor cell.
-				cursorBalance = " "                          // Balance the cursor cell so the value itself stays centered.
+				if !input.leftAligned {
+					cursorBalance = " " // Balance the cursor cell so centered text stays visually stable.
+				}
 			}
 			prefixWidth := ansi.StringWidth(input.prefix)
 			visible = min(visible, max(input.width-prefixWidth-ansi.StringWidth(cursorBalance), 1))
 			prefix := lipgloss.NewStyle().Foreground(colorFuchsia).Render(input.prefix)
-			lines[index] = centeredLine(cursorBalance+prefix+ansi.Cut(line, left, left+visible), input.width)
+			lines[index] = input.alignLine(cursorBalance + prefix + ansi.Cut(line, left, left+visible))
 			continue
 		}
 		plain := ansi.Strip(line)
 		leftTrimmed := strings.TrimLeftFunc(plain, unicode.IsSpace)
 		trimmed := strings.TrimRightFunc(leftTrimmed, unicode.IsSpace)
 		left := ansi.StringWidth(plain) - ansi.StringWidth(leftTrimmed)
-		lines[index] = centeredLine(ansi.Cut(line, left, left+ansi.StringWidth(trimmed)), input.width)
+		lines[index] = input.alignLine(ansi.Cut(line, left, left+ansi.StringWidth(trimmed)))
 	}
 	view := strings.Join(lines, "\n")
 	if err := input.Error(); err != nil {
-		view += "\n" + centeredLine(errorStyle.Render(err.Error()), input.width)
+		view += "\n" + input.alignLine(errorStyle.Render(friendlyError(err)))
 	}
 	return view
+}
+
+func (input *centeredInput) alignLine(value string) string {
+	if input.leftAligned {
+		return lipgloss.NewStyle().Width(input.width).Align(lipgloss.Left).Render(value)
+	}
+	return centeredLine(value, input.width)
 }
 
 func centeredLine(value string, width int) string {
@@ -111,6 +134,20 @@ func (input *centeredInput) WithWidth(width int) huh.Field {
 
 func (input *centeredInput) WithHeight(height int) huh.Field {
 	input.Input.WithHeight(height)
+	return input
+}
+
+// WithInline keeps a short label and its value on one line. This is useful for
+// compact repeated fields such as chip color and denomination rows.
+func (input *centeredInput) WithInline(inline bool) *centeredInput {
+	input.Input.Inline(inline)
+	input.inline = inline
+	return input
+}
+
+// WithLeftAlign keeps popup fields readable while the main login forms stay centered.
+func (input *centeredInput) WithLeftAlign(left bool) *centeredInput {
+	input.leftAligned = left
 	return input
 }
 

@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/thsnkhn/bluff/internal/api"
 )
@@ -24,7 +25,22 @@ type tableMouseMsg struct {
 type tablesLoadedMsg struct{ tables []api.TableSummary }
 type tableLoadedMsg struct{ table api.TableDetail }
 type tableCreatedMsg struct{ table api.TableSummary }
-type tablePlayerCreatedMsg struct{ player api.TablePlayer }
+type tablePlayerCreatedMsg struct {
+	player     api.TablePlayer
+	inviteCode string
+}
+type tablePlayerUpdatedMsg struct {
+	player     api.TablePlayer
+	inviteCode string
+}
+type playerInviteCreatedMsg struct {
+	playerID string
+	code     string
+}
+type tablePlayerRemovedMsg struct {
+	playerID string
+	disabled bool
+}
 type tableFormatCreatedMsg struct{ format api.GameFormat }
 type tableGamePreviewedMsg struct{ game api.TableGame }
 type tableGameRecordedMsg struct{ table api.TableDetail }
@@ -32,7 +48,7 @@ type tableGameRecordedMsg struct{ table api.TableDetail }
 func (m Model) isTableScreen() bool {
 	switch m.screen {
 	case tablesScreen, tableDetailScreen, formatsScreen, formatDetailScreen, playersScreen,
-		gamesScreen, gameDetailScreen, tableCreateScreen, formatCreateScreen, playerCreateScreen, recordGameScreen:
+		gamesScreen, gameDetailScreen, tableCreateScreen, formatCreateScreen, playerCreateScreen, playerDetailScreen, recordGameScreen:
 		return true
 	default:
 		return false
@@ -46,7 +62,7 @@ func (m Model) tableParentScreen() screen {
 		return recordGameScreen
 	}
 	switch m.screen {
-	case formatCreateScreen, formatsScreen, formatDetailScreen, playerCreateScreen, playersScreen,
+	case formatCreateScreen, formatsScreen, formatDetailScreen, playerCreateScreen, playerDetailScreen, playersScreen,
 		gamesScreen, gameDetailScreen:
 		return tableDetailScreen
 	case recordGameScreen:
@@ -57,6 +73,14 @@ func (m Model) tableParentScreen() screen {
 }
 
 func (m Model) updateTableKey(key string) (tea.Model, tea.Cmd, bool) {
+	if (m.screen == tableDetailScreen || m.screen == formatsScreen || m.screen == playersScreen || m.screen == gamesScreen) && (key == "tab" || key == "shift+tab") {
+		direction := 1
+		if key == "shift+tab" {
+			direction = -1
+		}
+		updated, cmd := m.cycleTableSection(direction)
+		return updated, cmd, true
+	}
 	switch m.screen {
 	case tableCreateScreen, formatCreateScreen, playerCreateScreen:
 		if key == "esc" {
@@ -96,19 +120,13 @@ func (m Model) updateTableKey(key string) (tea.Model, tea.Cmd, bool) {
 		}
 		switch key {
 		case "r":
+			m.loading, m.status, m.err = true, "Refreshing table", nil
+			return m, tea.Batch(m.spinner.Tick, m.tableCmd(m.table.Table.ID)), true
+		case "c":
 			if m.table.CanManage {
 				m.startRecordGame()
 				return m, m.form.Init(), true
 			}
-		case "f":
-			m.screen, m.formatIndex, m.err = formatsScreen, 0, nil
-			return m, nil, true
-		case "p":
-			m.screen, m.playerIndex, m.err = playersScreen, 0, nil
-			return m, nil, true
-		case "g":
-			m.screen, m.gameIndex, m.err = gamesScreen, max(len(m.table.Games)-1, 0), nil
-			return m, nil, true
 		case "esc", "backspace":
 			m.screen, m.err = tablesScreen, nil
 			return m, nil, true
@@ -154,6 +172,11 @@ func (m Model) updateTableKey(key string) (tea.Model, tea.Cmd, bool) {
 				m.screen = gameDetailScreen
 			}
 			return m, nil, true
+		case "c":
+			if m.table.CanManage {
+				m.startRecordGame()
+				return m, m.form.Init(), true
+			}
 		case "esc", "backspace":
 			m.screen, m.err = tableDetailScreen, nil
 			return m, nil, true
@@ -171,7 +194,16 @@ func (m Model) updateTableKey(key string) (tea.Model, tea.Cmd, bool) {
 		case "down", "j":
 			moveVisible(&m.playerIndex, m.visiblePlayerIndices(), 1)
 			return m, nil, true
-		case "a", "c":
+		case "enter", " ":
+			if len(m.visiblePlayerIndices()) > 0 {
+				m.screen = playerDetailScreen
+				m.resetPlayerEditForm()
+				if m.form != nil {
+					return m, m.form.Init(), true
+				}
+			}
+			return m, nil, true
+		case "c":
 			if m.table.CanManage {
 				m.screen, m.err = playerCreateScreen, nil
 				m.resetPlayerCreateForm()
@@ -179,6 +211,39 @@ func (m Model) updateTableKey(key string) (tea.Model, tea.Cmd, bool) {
 			}
 		case "esc", "backspace":
 			m.screen, m.err = tableDetailScreen, nil
+			return m, nil, true
+		}
+	case playerDetailScreen:
+		if m.playerInvitePopup {
+			if key == "esc" || key == "backspace" || key == "enter" {
+				m.playerInvitePopup = false
+				m.resetPlayerEditForm()
+				if m.form != nil {
+					return m, m.form.Init(), true
+				}
+				return m, nil, true
+			}
+			return m, nil, true
+		}
+		if key == "enter" && m.form != nil && m.table.CanManage && m.playerCanEdit() {
+			updated, cmd := m.handleTableFormCompleted()
+			return updated, cmd, true
+		}
+		if key == "c" && m.table.CanManage && m.playerInviteCodeForCurrentPlayer() == "" {
+			m.loading, m.status, m.err = true, "Creating invite code", nil
+			return m, tea.Batch(m.spinner.Tick, m.createPlayerInviteCmd()), true
+		}
+		if key == "d" && m.table.CanManage && !m.playerHasEntries() {
+			m.loading, m.status, m.err = true, "Deleting player", nil
+			return m, tea.Batch(m.spinner.Tick, m.deletePlayerCmd()), true
+		}
+		if key == "x" && m.table.CanManage && m.playerHasEntries() {
+			m.loading, m.status, m.err = true, "Disabling player", nil
+			return m, tea.Batch(m.spinner.Tick, m.disablePlayerCmd()), true
+		}
+		if key == "esc" || key == "backspace" {
+			m.screen, m.err = playersScreen, nil
+			m.form = nil
 			return m, nil, true
 		}
 	case recordGameScreen:
@@ -222,18 +287,39 @@ func (m Model) updateTableKey(key string) (tea.Model, tea.Cmd, bool) {
 					m.recordSelected[player.ID] = !m.recordSelected[player.ID]
 				}
 				return m, nil, true
-			case "enter":
+			case "enter", "e":
+				// Enter on a selected player with saved chips edits that player's
+				// earnings. Otherwise start the first unfinished player.
+				if m.recordSelectedPlayerIsEntered() {
+					m.recordPlayerIndex = m.playerIndex
+					m.recordPhase = recordChipCountsPhase
+					m.resetRecordChipForm()
+					return m, m.form.Init(), true
+				}
 				if len(m.selectedPlayerIndices()) < 2 {
 					m.err = errors.New("select at least two players")
 					return m, nil, true
 				}
 				indices := m.selectedPlayerIndices()
-				m.recordPlayerIndex = indices[0]
-				m.recordCounts = map[string]map[string]int{}
+				m.recordPlayerIndex = m.firstUnenteredRecordPlayer(indices)
 				m.recordPhase = recordChipCountsPhase
 				m.resetRecordChipForm()
 				return m, m.form.Init(), true
-			case "a", "c":
+			case "r":
+				if m.allSelectedRecordingsEntered() {
+					m.loading, m.status, m.err = true, "Checking table balance", nil
+					return m, tea.Batch(m.spinner.Tick, m.previewRecordGameCmd()), true
+				}
+				return m, nil, true
+			case "d":
+				if m.table.CanManage && m.recordSelectedPlayerIsEntered() {
+					player := m.table.Players[m.playerIndex]
+					delete(m.recordCounts, player.ID)
+					delete(m.recordEntered, player.ID)
+					m.recordPreview, m.err = nil, nil
+				}
+				return m, nil, true
+			case "c":
 				if m.table.CanManage {
 					m.recordQuickAdd = true
 					m.screen, m.err = playerCreateScreen, nil
@@ -249,7 +335,7 @@ func (m Model) updateTableKey(key string) (tea.Model, tea.Cmd, bool) {
 				m.screen, m.err = tableDetailScreen, nil
 				return m, nil, true
 			}
-			if key == "enter" {
+			if key == "enter" || key == "r" {
 				m.loading, m.err = true, nil
 				if m.recordPreview == nil {
 					m.status = "Checking table balance"
@@ -264,17 +350,57 @@ func (m Model) updateTableKey(key string) (tea.Model, tea.Cmd, bool) {
 	return m, nil, false
 }
 
+func (m Model) cycleTableSection(direction int) (tea.Model, tea.Cmd) {
+	section := int(m.currentTableSection()) + direction
+	if section < int(tableOverviewSection) {
+		section = int(tableFormatsSection)
+	}
+	if section > int(tableFormatsSection) {
+		section = int(tableOverviewSection)
+	}
+	return m.navigateTableSection(tableSection(section))
+}
+
+func (m Model) navigateTableSection(section tableSection) (tea.Model, tea.Cmd) {
+	m.tableNavIndex = int(section)
+	switch section {
+	case tablePlayersSection:
+		m.screen, m.playerIndex, m.err = playersScreen, 0, nil
+	case tableFormatsSection:
+		m.screen, m.formatIndex, m.err = formatsScreen, 0, nil
+	case tableGamesSection:
+		m.screen, m.gameIndex, m.err = gamesScreen, max(len(m.table.Games)-1, 0), nil
+	default:
+		m.screen, m.err = tableDetailScreen, nil
+	}
+	m.searchActive, m.searchQuery = false, ""
+	return m, nil
+}
+
 func (m Model) handleTableFormCompleted() (tea.Model, tea.Cmd) {
 	switch m.screen {
 	case tableCreateScreen:
 		m.loading, m.status, m.err = true, "Creating table", nil
 		return m, tea.Batch(m.spinner.Tick, m.createTableCmd())
 	case formatCreateScreen:
+		if chips, err := parseChipRows(m.formatForm.chips); err != nil {
+			m.err = err
+			m.resetFormatCreateForm()
+			return m, m.form.Init()
+		} else {
+			_ = chips
+		}
 		m.loading, m.status, m.err = true, "Creating game format", nil
 		return m, tea.Batch(m.spinner.Tick, m.createFormatCmd())
 	case playerCreateScreen:
 		m.loading, m.status, m.err = true, "Adding player", nil
 		return m, tea.Batch(m.spinner.Tick, m.createPlayerCmd())
+	case playerDetailScreen:
+		if !m.playerCanEdit() {
+			return m, nil
+		}
+		m.loading, m.status, m.err = true, "Saving player", nil
+		return m, tea.Batch(m.spinner.Tick, m.updatePlayerCmd())
 	case recordGameScreen:
 		if m.recordPhase == recordDetailsPhase {
 			m.form = nil
@@ -294,22 +420,12 @@ func (m Model) handleTableFormCompleted() (tea.Model, tea.Cmd) {
 				counts[chip.ID] = value
 			}
 			m.recordCounts[player.ID] = counts
-			indices := m.selectedPlayerIndices()
-			current := 0
-			for index, candidate := range indices {
-				if candidate == m.recordPlayerIndex {
-					current = index
-					break
-				}
-			}
-			if current+1 < len(indices) {
-				m.recordPlayerIndex = indices[current+1]
-				m.resetRecordChipForm()
-				return m, m.form.Init()
-			}
+			m.recordEntered[player.ID] = true
+			// Return to the player list after every save. This makes the same
+			// popup usable for both new entries and edits.
 			m.form, m.recordPreview, m.err = nil, nil, nil
-			m.recordPhase, m.loading, m.status = recordReviewPhase, true, "Checking table balance"
-			return m, tea.Batch(m.spinner.Tick, m.previewRecordGameCmd())
+			m.recordPhase = recordPlayersPhase
+			return m, nil
 		}
 	}
 	return m, nil
@@ -325,9 +441,40 @@ func (m Model) selectedPlayerIndices() []int {
 	return indices
 }
 
+func (m Model) recordSelectedPlayerIsEntered() bool {
+	if m.playerIndex < 0 || m.playerIndex >= len(m.table.Players) {
+		return false
+	}
+	player := m.table.Players[m.playerIndex]
+	return m.recordSelected[player.ID] && m.recordEntered[player.ID]
+}
+
+func (m Model) firstUnenteredRecordPlayer(indices []int) int {
+	for _, index := range indices {
+		if !m.recordEntered[m.table.Players[index].ID] {
+			return index
+		}
+	}
+	return indices[0]
+}
+
+func (m Model) allSelectedRecordingsEntered() bool {
+	indices := m.selectedPlayerIndices()
+	if len(indices) < 2 {
+		return false
+	}
+	for _, index := range indices {
+		if !m.recordEntered[m.table.Players[index].ID] {
+			return false
+		}
+	}
+	return true
+}
+
 func (m *Model) startRecordGame() {
 	m.screen, m.recordPhase, m.recordPreview, m.err = recordGameScreen, recordDetailsPhase, nil, nil
 	m.recordSelected, m.recordCounts = map[string]bool{}, map[string]map[string]int{}
+	m.recordEntered = map[string]bool{}
 	m.recordQuickAdd, m.recordQuickAddID = false, ""
 	m.resetRecordDetailsForm()
 }
@@ -335,6 +482,21 @@ func (m *Model) startRecordGame() {
 func (m Model) updateTableMouse(msg tableMouseMsg) (tea.Model, tea.Cmd) {
 	if m.loading {
 		return m, nil
+	}
+	if strings.HasPrefix(msg.action, "nav:") {
+		if !msg.activate {
+			return m, nil
+		}
+		switch strings.TrimPrefix(msg.action, "nav:") {
+		case "players":
+			return m.navigateTableSection(tablePlayersSection)
+		case "formats":
+			return m.navigateTableSection(tableFormatsSection)
+		case "games":
+			return m.navigateTableSection(tableGamesSection)
+		case "overview":
+			return m.navigateTableSection(tableOverviewSection)
+		}
 	}
 	switch m.screen {
 	case tablesScreen:
@@ -374,19 +536,14 @@ func (m Model) updateTableMouse(msg tableMouseMsg) (tea.Model, tea.Cmd) {
 		}
 		m.tablesActionHover = ""
 		switch msg.action {
-		case "search":
-			m.searchActive, m.searchQuery = true, ""
 		case "record":
 			if m.table.CanManage {
 				m.startRecordGame()
 				return m, m.form.Init()
 			}
-		case "formats":
-			m.screen = formatsScreen
-		case "players":
-			m.screen = playersScreen
-		case "games":
-			m.screen, m.gameIndex = gamesScreen, max(len(m.table.Games)-1, 0)
+		case "refresh":
+			m.loading, m.status, m.err = true, "Refreshing table", nil
+			return m, tea.Batch(m.spinner.Tick, m.tableCmd(m.table.Table.ID))
 		case "back":
 			m.screen = tablesScreen
 		}
@@ -417,6 +574,13 @@ func (m Model) updateTableMouse(msg tableMouseMsg) (tea.Model, tea.Cmd) {
 	case playersScreen:
 		if msg.index >= 0 && msg.index < len(m.table.Players) {
 			m.playerIndex = msg.index
+			if msg.activate {
+				m.screen = playerDetailScreen
+				m.resetPlayerEditForm()
+				if m.form != nil {
+					return m, m.form.Init()
+				}
+			}
 			return m, nil
 		}
 		m.playerActionHover = msg.action
@@ -446,11 +610,58 @@ func (m Model) updateTableMouse(msg tableMouseMsg) (tea.Model, tea.Cmd) {
 		if msg.action == "search" && msg.activate {
 			m.searchActive, m.searchQuery = true, ""
 		}
+		if msg.action == "record" && msg.activate && m.table.CanManage {
+			m.startRecordGame()
+			return m, m.form.Init()
+		}
+		if msg.action == "back" && msg.activate {
+			m.screen = tableDetailScreen
+		}
 	case formatDetailScreen, gameDetailScreen:
 		if msg.action == "search" && msg.activate {
 			m.searchActive, m.searchQuery = true, ""
 		}
 	case recordGameScreen:
+		if msg.action != "" && msg.activate {
+			switch msg.action {
+			case "back":
+				m.screen, m.err = tableDetailScreen, nil
+				return m, nil
+			case "create":
+				if m.recordPhase == recordPlayersPhase && m.table.CanManage {
+					m.recordQuickAdd = true
+					m.screen, m.err = playerCreateScreen, nil
+					m.resetPlayerCreateForm()
+					return m, m.form.Init()
+				}
+			case "delete":
+				if m.recordPhase == recordPlayersPhase && m.recordSelectedPlayerIsEntered() {
+					player := m.table.Players[m.playerIndex]
+					delete(m.recordCounts, player.ID)
+					delete(m.recordEntered, player.ID)
+					m.recordPreview, m.err = nil, nil
+				}
+				return m, nil
+			case "edit":
+				if m.recordPhase == recordPlayersPhase && m.recordSelectedPlayerIsEntered() {
+					m.recordPlayerIndex = m.playerIndex
+					m.recordPhase = recordChipCountsPhase
+					m.resetRecordChipForm()
+					return m, m.form.Init()
+				}
+				return m, nil
+			case "review":
+				if m.recordPhase == recordPlayersPhase && m.allSelectedRecordingsEntered() {
+					m.loading, m.status, m.err = true, "Checking table balance", nil
+					return m, tea.Batch(m.spinner.Tick, m.previewRecordGameCmd())
+				}
+			case "record":
+				if m.recordPhase == recordReviewPhase {
+					m.loading, m.status, m.err = true, "Recording game", nil
+					return m, tea.Batch(m.spinner.Tick, m.recordGameCmd())
+				}
+			}
+		}
 		if m.recordPhase == recordFormatPhase && msg.index >= 0 && msg.index < len(m.table.Formats) {
 			m.recordFormatIndex = msg.index
 			if msg.activate {
@@ -493,29 +704,31 @@ func (m Model) tableHitRegions() []hitRegion {
 			return nil
 		}
 		items = tableDetailActionItems(m.table.CanManage)
-		actionY = y + lipgloss.Height(pageHeader(width, "tables", m.table.Table.Name)) + 1
-		regions = actionBarHitRegions(x, actionY, items)
+		actionY = y + lipgloss.Height(m.tableWorkspaceHeader(width)) + 1
+		regions = append(regions, m.tableWorkspaceNavRegions(m.tableWorkspaceMetrics(width, items))...)
 	case formatsScreen:
 		if m.table == nil {
 			return nil
 		}
 		items = formatActionItems(m.table.CanManage)
-		actionY = y + lipgloss.Height(pageHeader(width, "tables", m.table.Table.Name, "formats")) + 1
+		actionY = y + lipgloss.Height(m.tableWorkspaceHeader(width)) + 1
 		listY = actionY + lipgloss.Height(searchActionBar(items, m.formatActionHover, m.searchActive, m.searchQuery)) + 1
 		regions = actionBarHitRegions(x, actionY, items)
+		regions = append(regions, m.tableWorkspaceNavRegions(m.tableWorkspaceMetrics(width, items))...)
 		for row, index := range m.visibleFormatIndices() {
-			regions = append(regions, hitRegion{x0: x, x1: x + width, y0: listY + 1 + row, y1: listY + 1 + row, value: fmt.Sprintf("format:%d", index)})
+			regions = append(regions, hitRegion{x0: x, x1: x + width, y0: listY + 5 + row, y1: listY + 5 + row, value: fmt.Sprintf("format:%d", index)})
 		}
 	case playersScreen:
 		if m.table == nil {
 			return nil
 		}
 		items = playerActionItems(m.table.CanManage)
-		actionY = y + lipgloss.Height(pageHeader(width, "tables", m.table.Table.Name, "players")) + 1
+		actionY = y + lipgloss.Height(m.tableWorkspaceHeader(width)) + 1
 		listY = actionY + lipgloss.Height(searchActionBar(items, m.playerActionHover, m.searchActive, m.searchQuery)) + 1
 		regions = actionBarHitRegions(x, actionY, items)
+		regions = append(regions, m.tableWorkspaceNavRegions(m.tableWorkspaceMetrics(width, items))...)
 		for row, index := range m.visiblePlayerIndices() {
-			regions = append(regions, hitRegion{x0: x, x1: x + width, y0: listY + 1 + row, y1: listY + 1 + row, value: fmt.Sprintf("player:%d", index)})
+			regions = append(regions, hitRegion{x0: x, x1: x + width, y0: listY + 5 + row, y1: listY + 5 + row, value: fmt.Sprintf("player:%d", index)})
 		}
 	case formatDetailScreen:
 		if m.table == nil || m.formatIndex < 0 || m.formatIndex >= len(m.table.Formats) {
@@ -529,24 +742,29 @@ func (m Model) tableHitRegions() []hitRegion {
 			return nil
 		}
 		items = []actionBarItem{{key: "/", label: "Search", action: "search"}, {key: "esc", label: "Back", action: "back"}}
-		actionY = y + lipgloss.Height(pageHeader(width, "tables", m.table.Table.Name, "games", m.table.Games[m.gameIndex].Date)) + 1
+		actionY = y + lipgloss.Height(pageHeader(width, m.table.Table.Name, "games", m.table.Games[m.gameIndex].Date)) + 1
 		regions = actionBarHitRegions(x, actionY, items)
 	case gamesScreen:
 		if m.table == nil {
 			return nil
 		}
-		actionY = y + lipgloss.Height(pageHeader(width, "tables", m.table.Table.Name, "games")) + 1
-		listY = actionY + lipgloss.Height(searchActionBar(gamesActionItems(), "", m.searchActive, m.searchQuery)) + 1
+		items = gamesActionItems(m.table.CanManage)
+		actionY = y + lipgloss.Height(m.tableWorkspaceHeader(width)) + 1
+		listY = actionY + lipgloss.Height(searchActionBar(gamesActionItems(m.table.CanManage), "", m.searchActive, m.searchQuery)) + 1
+		regions = actionBarHitRegions(x, actionY, items)
+		regions = append(regions, m.tableWorkspaceNavRegions(m.tableWorkspaceMetrics(width, items))...)
 		visible := m.visibleGameIndices()
 		for row := range visible {
 			index := visible[len(visible)-1-row]
-			regions = append(regions, hitRegion{x0: x, x1: x + width, y0: listY + row + 1, y1: listY + row + 1, value: fmt.Sprintf("game:%d", index)})
+			regions = append(regions, hitRegion{x0: x, x1: x + width, y0: listY + row + 5, y1: listY + row + 5, value: fmt.Sprintf("game:%d", index)})
 		}
 	case recordGameScreen:
 		if m.table == nil {
 			return nil
 		}
-		baseY := y + lipgloss.Height(pageHeader(width, "tables", m.table.Table.Name, "record")) + 2
+		actionY := y + lipgloss.Height(pageHeader(width, m.table.Table.Name, "record")) + 1
+		regions = append(regions, actionBarHitRegions(x, actionY, m.recordActionItems())...)
+		baseY := actionY + 2
 		if m.recordPhase == recordFormatPhase {
 			for index := range m.table.Formats {
 				regions = append(regions, hitRegion{x0: x, x1: x + width, y0: baseY + 2 + index, y1: baseY + 2 + index, value: fmt.Sprintf("format:%d", index)})
@@ -575,14 +793,11 @@ func tablesActionItems(canCreate bool) []actionBarItem {
 
 func tableDetailActionItems(canManage bool) []actionBarItem {
 	items := []actionBarItem{
-		{key: "g", label: "Games", action: "games"},
-		{key: "f", label: "Formats", action: "formats"},
-		{key: "p", label: "Players", action: "players"},
-		{key: "/", label: "Search", action: "search"},
+		{key: "r", label: "Refresh", action: "refresh"},
 		{key: "esc", label: "Back", action: "back"},
 	}
 	if canManage {
-		items = append([]actionBarItem{{key: "r", label: "Record game", action: "record", accent: true}}, items...)
+		items = append([]actionBarItem{{key: "c", label: "Record game", action: "record", accent: true}}, items...)
 	}
 	return items
 }
@@ -598,7 +813,7 @@ func formatActionItems(canManage bool) []actionBarItem {
 func playerActionItems(canManage bool) []actionBarItem {
 	items := []actionBarItem{{key: "/", label: "Search", action: "search"}, {key: "esc", label: "Back", action: "back"}}
 	if canManage {
-		items = append([]actionBarItem{{key: "a", label: "Add player", action: "create", accent: true}}, items...)
+		items = append([]actionBarItem{{key: "c", label: "Add player", action: "create", accent: true}}, items...)
 	}
 	return items
 }
@@ -627,7 +842,8 @@ func (m Model) tableSummaryList(width int) string {
 	if len(m.visibleTableIndices()) == 0 {
 		return mutedStyle.Render("No tables match the search.")
 	}
-	lines := []string{mutedStyle.Render("TABLE                         HOST             PLAYERS  GAMES  LAST GAME")}
+	columns := tableSummaryColumns(width)
+	lines := []string{mutedStyle.Render(tableSummaryGridLine(columns, "TABLE", "HOST", "PLAYERS", "GAMES", "LAST GAME"))}
 	for _, index := range m.visibleTableIndices() {
 		table := m.tables[index]
 		style := valueStyle
@@ -641,44 +857,90 @@ func (m Model) tableSummaryList(width int) string {
 			lastGame = *table.LastGameDate
 		}
 		host := "@" + truncate(table.HostUsername, 11) + " " + lipgloss.NewStyle().Foreground(colorFuchsia).Render("♛")
-		line := fmt.Sprintf("%s%-28s %-16s %4d     %4d  %s", marker, truncate(table.Name, 26), host, table.PlayerCount, table.GameCount, lastGame)
+		line := tableSummaryGridLine(columns,
+			marker+truncate(table.Name, max(columns[0]-2, 1)),
+			host,
+			strconv.Itoa(table.PlayerCount),
+			strconv.Itoa(table.GameCount),
+			lastGame,
+		)
 		lines = append(lines, style.Render(line))
 	}
 	return strings.Join(lines, "\n")
 }
 
+// tableSummaryColumns spreads the table index across the full terminal width.
+// Keep the proportions stable while allowing the last column to absorb rounding.
+func tableSummaryColumns(width int) []int {
+	content := max(width-8, 20) // four two-space gutters
+	tableWidth := content * 30 / 100
+	hostWidth := content * 24 / 100
+	playersWidth := content * 14 / 100
+	gamesWidth := content * 14 / 100
+	lastWidth := content - tableWidth - hostWidth - playersWidth - gamesWidth
+	return []int{tableWidth, hostWidth, playersWidth, gamesWidth, lastWidth}
+}
+
+func tableSummaryGridLine(columns []int, values ...string) string {
+	if len(columns) != len(values) {
+		return strings.Join(values, "  ")
+	}
+	cells := make([]string, 0, len(values))
+	for index, value := range values {
+		cellWidth := max(columns[index], 1)
+		cells = append(cells, lipgloss.NewStyle().Width(cellWidth).Render(truncate(value, cellWidth)))
+	}
+	return strings.Join(cells, "  ")
+}
+
+func weightedGridColumns(width int, weights ...int) []int {
+	if len(weights) == 0 {
+		return nil
+	}
+	gutters := (len(weights) - 1) * 2
+	content := max(width-gutters, len(weights))
+	total := 0
+	for _, weight := range weights {
+		total += max(weight, 0)
+	}
+	if total == 0 {
+		total = len(weights)
+	}
+	columns := make([]int, len(weights))
+	used := 0
+	for index, weight := range weights {
+		if index == len(weights)-1 {
+			columns[index] = max(content-used, 1)
+			break
+		}
+		columns[index] = max(content*max(weight, 0)/total, 1)
+		used += columns[index]
+	}
+	return columns
+}
+
 func (m Model) tableDetailView() string {
 	width := max(m.width-4, 44)
-	if m.loading {
+	if m.loading && m.table == nil {
 		return m.pageView(lipgloss.JoinVertical(lipgloss.Left, pageHeader(width, "tables"), "", m.spinner.View()+"  "+valueStyle.Render(m.status)), tableDetailFooter())
 	}
 	if m.table == nil {
 		return m.pageView(pageHeader(width, "tables"), tableDetailFooter())
 	}
 	items := tableDetailActionItems(m.table.CanManage)
-	parts := []string{
-		pageHeader(width, "tables", m.table.Table.Name),
-		"",
-		searchActionBar(items, m.tablesActionHover, m.searchActive, m.searchQuery),
-		"",
-		valueStyle.Render("Hosted by @"+m.table.Table.HostUsername) + " " + lipgloss.NewStyle().Foreground(colorFuchsia).Render("♛"),
-		mutedStyle.Render(fmt.Sprintf("%d players  ·  %d formats  ·  %d games", len(m.table.Players), len(m.table.Formats), len(m.table.Games))),
-		"",
-		m.tableStandings(width),
-		"",
-		m.tableRecentGames(width),
+	metrics := m.tableWorkspaceMetrics(width, items)
+	content := m.tableOverviewContent(workspaceContentWidth(metrics))
+	if m.loading {
+		content = m.spinner.View() + "  " + valueStyle.Render(m.status)
 	}
 	if m.notice != "" {
-		parts = append(parts, "", lipgloss.NewStyle().Foreground(colorGreen).Render("✓ "+m.notice))
+		content = lipgloss.JoinVertical(lipgloss.Left, content, "", lipgloss.NewStyle().Foreground(colorGreen).Render("✓ "+m.notice))
 	}
-	if m.err != nil {
-		parts = append(parts, "", errorStyle.Render("! "+friendlyError(m.err)))
-	}
-	return m.pageView(strings.Join(parts, "\n"), tableDetailFooter())
+	return m.tableWorkspace(tableOverviewSection, items, content, tableDetailFooter())
 }
 
 func tableDetailFooter() string {
-	return "↑↓ move   enter select   r record   g games   f formats   p players"
+	return "tab next   shift+tab previous   esc back"
 }
 
 func (m Model) tableStandings(width int) string {
@@ -689,7 +951,7 @@ func (m Model) tableStandings(width int) string {
 	for index, playerIndex := range m.visiblePlayerIndices() {
 		player := m.table.Players[playerIndex]
 		amount := standingStyle(player.Standing).Render(signedCredits(player.Standing))
-		name := valueStyle.Render(truncate(player.Name, max(width-20, 12)))
+		name := valueStyle.Render(truncate(displayTablePlayerName(player, m.table.Table.HostUsername), max(width-20, 12)))
 		gap := max(width-lipgloss.Width(name)-lipgloss.Width(amount)-8, 1)
 		lines = append(lines, fmt.Sprintf("%2d  %s%s%s", index+1, name, strings.Repeat(" ", gap), amount))
 	}
@@ -719,15 +981,13 @@ func (m Model) formatsView() string {
 	if m.table == nil {
 		return m.pageView(pageHeader(width, "tables", "formats"), formatsFooter(m.table != nil && m.table.CanManage))
 	}
-	if m.loading {
-		return m.pageView(lipgloss.JoinVertical(lipgloss.Left, pageHeader(width, "tables", m.table.Table.Name, "formats"), "", m.spinner.View()+"  "+valueStyle.Render(m.status)), formatsFooter(m.table.CanManage))
-	}
 	items := formatActionItems(m.table.CanManage)
-	parts := []string{pageHeader(width, "tables", m.table.Table.Name, "formats"), "", searchActionBar(items, m.formatActionHover, m.searchActive, m.searchQuery), "", m.formatList(width)}
-	if m.err != nil {
-		parts = append(parts, "", errorStyle.Render("! "+friendlyError(m.err)))
+	metrics := m.tableWorkspaceMetrics(width, items)
+	content := m.formatList(workspaceContentWidth(metrics))
+	if m.loading {
+		content = m.spinner.View() + "  " + valueStyle.Render(m.status)
 	}
-	return m.pageView(strings.Join(parts, "\n"), formatsFooter(m.table.CanManage))
+	return m.tableWorkspace(tableFormatsSection, items, content, formatsFooter(m.table.CanManage))
 }
 
 func formatsFooter(canManage bool) string {
@@ -739,12 +999,13 @@ func formatsFooter(canManage bool) string {
 
 func (m Model) formatList(width int) string {
 	if len(m.table.Formats) == 0 {
-		return lipgloss.JoinVertical(lipgloss.Left, valueStyle.Render("No game formats yet"), mutedStyle.Render("The table host can add the first format."))
+		return workspaceEmptyState(width, "No game formats yet", "The table host can add the first format.")
 	}
 	if len(m.visibleFormatIndices()) == 0 {
-		return mutedStyle.Render("No formats match the search.")
+		return lipgloss.NewStyle().Width(width).Render(mutedStyle.Render("No formats match the search."))
 	}
-	lines := []string{mutedStyle.Render("FORMAT                                      ENTRY       CHIPS")}
+	columns := weightedGridColumns(width, 52, 16, 32)
+	lines := []string{mutedStyle.Render(tableSummaryGridLine(columns, "FORMAT", "ENTRY", "CHIPS"))}
 	for _, index := range m.visibleFormatIndices() {
 		format := m.table.Formats[index]
 		style := valueStyle
@@ -755,9 +1016,13 @@ func (m Model) formatList(width int) string {
 		}
 		chipNames := make([]string, 0, len(format.Chips))
 		for _, chip := range format.Chips {
-			chipNames = append(chipNames, fmt.Sprintf("%s %d", chip.Label, chip.Value))
+			chipNames = append(chipNames, fmt.Sprintf("%s %s %d", chipSwatch(chip.Color), chip.Label, chip.Value))
 		}
-		line := fmt.Sprintf("%s%-40s %-10s %s", marker, truncate(format.Name, 38), credits(format.RequiredEntry), strings.Join(chipNames, ", "))
+		line := tableSummaryGridLine(columns,
+			marker+truncate(format.Name, max(columns[0]-2, 1)),
+			credits(format.RequiredEntry),
+			strings.Join(chipNames, ", "),
+		)
 		lines = append(lines, style.Render(line))
 	}
 	return strings.Join(lines, "\n")
@@ -774,7 +1039,7 @@ func (m Model) formatDetailView() string {
 		if !searchMatches(m.searchQuery, chip.Label+" "+chip.Color+" "+credits(chip.Value)) {
 			continue
 		}
-		lines = append(lines, chipStyle(chip.Color).Render("● "+chip.Label)+"  "+valueStyle.Render(credits(chip.Value)))
+		lines = append(lines, chipSwatch(chip.Color)+" "+valueStyle.Render(chip.Label)+"  "+valueStyle.Render(credits(chip.Value)))
 	}
 	return m.pageView(strings.Join(lines, "\n"), "")
 }
@@ -784,20 +1049,21 @@ func (m Model) playersView() string {
 	if m.table == nil {
 		return m.pageView(pageHeader(width, "tables", "players"), playersFooter(false))
 	}
-	if m.loading {
-		return m.pageView(lipgloss.JoinVertical(lipgloss.Left, pageHeader(width, m.table.Table.Name, "players"), "", m.spinner.View()+"  "+valueStyle.Render(m.status)), playersFooter(m.table.CanManage))
-	}
 	items := playerActionItems(m.table.CanManage)
-	parts := []string{pageHeader(width, "tables", m.table.Table.Name, "players"), "", searchActionBar(items, m.playerActionHover, m.searchActive, m.searchQuery), "", m.playerList(width)}
-	if m.err != nil {
-		parts = append(parts, "", errorStyle.Render("! "+friendlyError(m.err)))
+	metrics := m.tableWorkspaceMetrics(width, items)
+	content := m.playerList(workspaceContentWidth(metrics))
+	if m.notice != "" {
+		content = lipgloss.JoinVertical(lipgloss.Left, content, "", lipgloss.NewStyle().Foreground(colorGreen).Render("✓ "+m.notice))
 	}
-	return m.pageView(strings.Join(parts, "\n"), playersFooter(m.table.CanManage))
+	if m.loading {
+		content = m.spinner.View() + "  " + valueStyle.Render(m.status)
+	}
+	return m.tableWorkspace(tablePlayersSection, items, content, playersFooter(m.table.CanManage))
 }
 
 func playersFooter(canManage bool) string {
 	if canManage {
-		return "↑↓ move   a add player"
+		return "↑↓ move   c add player"
 	}
 	return "↑↓ move"
 }
@@ -807,37 +1073,39 @@ func (m Model) gamesView() string {
 	if m.table == nil {
 		return m.pageView(pageHeader(width, "tables", "games"), "")
 	}
+	items := gamesActionItems(m.table.CanManage)
+	metrics := m.tableWorkspaceMetrics(width, items)
+	content := m.gameList(workspaceContentWidth(metrics))
 	if m.loading {
-		return m.pageView(lipgloss.JoinVertical(lipgloss.Left,
-			pageHeader(width, "tables", m.table.Table.Name, "games"), "",
-			m.spinner.View()+"  "+valueStyle.Render(m.status)), gamesFooter())
+		content = m.spinner.View() + "  " + valueStyle.Render(m.status)
 	}
-	items := gamesActionItems()
-	parts := []string{pageHeader(width, "tables", m.table.Table.Name, "games"), "", searchActionBar(items, "", m.searchActive, m.searchQuery), "", m.gameList(width)}
-	if m.err != nil {
-		parts = append(parts, "", errorStyle.Render("! "+friendlyError(m.err)))
-	}
-	return m.pageView(strings.Join(parts, "\n"), gamesFooter())
+	return m.tableWorkspace(tableGamesSection, items, content, gamesFooter(m.table.CanManage))
 }
 
-func gamesFooter() string {
+func gamesFooter(canManage bool) string {
+	if canManage {
+		return "↑↓ move   enter inspect   c record"
+	}
 	return "↑↓ move   enter inspect"
 }
 
-func gamesActionItems() []actionBarItem {
-	return []actionBarItem{{key: "/", label: "Search", action: "search"}, {key: "esc", label: "Back", action: "back"}}
+func gamesActionItems(canManage bool) []actionBarItem {
+	items := []actionBarItem{{key: "/", label: "Search", action: "search"}, {key: "esc", label: "Back", action: "back"}}
+	if canManage {
+		items = append([]actionBarItem{{key: "c", label: "Record game", action: "record", accent: true}}, items...)
+	}
+	return items
 }
 
 func (m Model) gameList(width int) string {
 	if len(m.table.Games) == 0 {
-		return lipgloss.JoinVertical(lipgloss.Left,
-			valueStyle.Render("No games recorded yet"),
-			mutedStyle.Render("Recorded games will stay here with their chip snapshots."))
+		return workspaceEmptyState(width, "No games recorded yet", "Recorded games will stay here with their chip snapshots.")
 	}
 	if len(m.visibleGameIndices()) == 0 {
-		return mutedStyle.Render("No games match the search.")
+		return lipgloss.NewStyle().Width(width).Render(mutedStyle.Render("No games match the search."))
 	}
-	lines := []string{mutedStyle.Render("DATE          FORMAT                              PLAYERS  STATUS")}
+	columns := weightedGridColumns(width, 18, 42, 15, 25)
+	lines := []string{mutedStyle.Render(tableSummaryGridLine(columns, "DATE", "FORMAT", "PLAYERS", "STATUS"))}
 	visible := m.visibleGameIndices()
 	for row := len(visible) - 1; row >= 0; row-- {
 		index := visible[row]
@@ -848,8 +1116,12 @@ func (m Model) gameList(width int) string {
 			style = lipgloss.NewStyle().Bold(true).Foreground(colorFuchsia)
 			marker = "› "
 		}
-		line := fmt.Sprintf("%s%-12s %-36s %7d  %s", marker, game.Date,
-			truncate(game.Format.Name, 34), len(game.Participants), statusBadge(game.Status))
+		line := tableSummaryGridLine(columns,
+			marker+truncate(game.Date, max(columns[0]-2, 1)),
+			truncate(game.Format.Name, max(columns[1], 1)),
+			strconv.Itoa(len(game.Participants)),
+			statusBadge(game.Status),
+		)
 		lines = append(lines, style.Render(line))
 	}
 	return strings.Join(lines, "\n")
@@ -862,7 +1134,7 @@ func (m Model) gameDetailView() string {
 	}
 	game := m.table.Games[m.gameIndex]
 	lines := []string{
-		pageHeader(width, "tables", m.table.Table.Name, "games", game.Date),
+		pageHeader(width, m.table.Table.Name, "games", game.Date),
 		"",
 		searchActionBar([]actionBarItem{{key: "/", label: "Search", action: "search"}, {key: "esc", label: "Back", action: "back"}}, "", m.searchActive, m.searchQuery),
 		"",
@@ -872,14 +1144,14 @@ func (m Model) gameDetailView() string {
 		sectionHeading("Chip snapshot", width),
 	}
 	for _, chip := range game.Format.Chips {
-		lines = append(lines, "  "+chipStyle(chip.Color).Render("● "+chip.Label)+"  "+valueStyle.Render(credits(chip.Value)))
+		lines = append(lines, "  "+chipSwatch(chip.Color)+" "+valueStyle.Render(chip.Label)+"  "+valueStyle.Render(credits(chip.Value)))
 	}
 	lines = append(lines, "", sectionHeading("Results", width))
 	for _, participant := range game.Participants {
 		if !searchMatches(m.searchQuery, participant.PlayerName) {
 			continue
 		}
-		lines = append(lines, valueStyle.Render(truncate(participant.PlayerName, 22))+"  "+
+		lines = append(lines, valueStyle.Render(truncate(displayParticipantName(participant.PlayerName, m.table.Table.HostUsername), 22))+"  "+
 			standingStyle(participant.ProfitLoss).Render(signedCredits(participant.ProfitLoss))+"  "+
 			mutedStyle.Render("ending ")+standingStyle(participant.EndingStanding).Render(signedCredits(participant.EndingStanding)))
 		for _, chip := range participant.ChipCounts {
@@ -897,12 +1169,13 @@ func (m Model) gameDetailView() string {
 
 func (m Model) playerList(width int) string {
 	if len(m.table.Players) == 0 {
-		return lipgloss.JoinVertical(lipgloss.Left, valueStyle.Render("No players yet"), mutedStyle.Render("Add a player before recording a game."))
+		return workspaceEmptyState(width, "No players yet", "Add a player before recording a game.")
 	}
 	if len(m.visiblePlayerIndices()) == 0 {
-		return mutedStyle.Render("No players match the search.")
+		return lipgloss.NewStyle().Width(width).Render(mutedStyle.Render("No players match the search."))
 	}
-	lines := []string{mutedStyle.Render("PLAYER" + strings.Repeat(" ", max(width-18, 4)) + "STANDING")}
+	columns := weightedGridColumns(width, 3, 1)
+	lines := []string{mutedStyle.Render(tableSummaryGridLine(columns, "PLAYER", "STANDING"))}
 	for _, index := range m.visiblePlayerIndices() {
 		player := m.table.Players[index]
 		marker := "  "
@@ -911,11 +1184,20 @@ func (m Model) playerList(width int) string {
 			marker = "› "
 			style = lipgloss.NewStyle().Bold(true).Foreground(colorFuchsia)
 		}
-		name := truncate(player.Name, max(width-18, 8))
-		line := fmt.Sprintf("%s%-*s %s", marker, max(width-4, 14), name, signedCredits(player.Standing))
+		line := tableSummaryGridLine(columns,
+			marker+truncate(displayTablePlayerName(player, m.table.Table.HostUsername), max(columns[0]-2, 1)),
+			signedCreditNumber(player.Standing),
+		)
 		lines = append(lines, style.Render(line))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func signedCreditNumber(value int) string {
+	if value > 0 {
+		return "+" + strconv.Itoa(value)
+	}
+	return strconv.Itoa(value)
 }
 
 func (m Model) tableCreateView() string {
@@ -926,18 +1208,195 @@ func (m Model) formatCreateView() string {
 	if m.table == nil {
 		return m.pageView(pageHeader(max(m.width-4, 44), "formats"), "")
 	}
-	return m.centeredFormPage(strings.Join([]string{"tables", m.table.Table.Name, "formats"}, " / "), "Create game format", "Create", "")
+	background := m
+	background.screen = formatsScreen
+	background.err = nil
+	return m.formPopupSizedWithActions(background.formatsView(), "Create game format", m.popupFormView(54), "tab next   enter create   esc close", 54, []actionBarItem{
+		{key: "enter", label: "Create", action: "submit", accent: true},
+		{key: "esc", label: "Close", action: "close"},
+	})
 }
 
 func (m Model) playerCreateView() string {
 	if m.table == nil {
 		return m.pageView(pageHeader(max(m.width-4, 44), "players"), "")
 	}
-	crumb := []string{"tables", m.table.Table.Name, "players"}
-	if m.recordQuickAdd {
-		crumb = []string{"tables", m.table.Table.Name, "record", "add player"}
+	background := m
+	background.screen = playersScreen
+	background.err = nil
+	return m.formPopupWithActions(background.playersView(), "Add player", m.popupFormView(72), "tab next   enter add   esc close", []actionBarItem{
+		{key: "enter", label: "Add", action: "submit", accent: true},
+		{key: "esc", label: "Close", action: "close"},
+	})
+}
+
+func (m Model) playerDetailView() string {
+	if m.table == nil || m.playerIndex < 0 || m.playerIndex >= len(m.table.Players) {
+		return m.pageView(pageHeader(max(m.width-4, 44), "players"), "")
 	}
-	return m.centeredFormPage(strings.Join(crumb, " / "), "Add player", "Create", "")
+	player := m.table.Players[m.playerIndex]
+	background := m
+	background.screen = playersScreen
+	background.err = nil
+	inviteCode := m.playerInviteCodeForCurrentPlayer()
+	if m.playerInvitePopup && inviteCode != "" {
+		body := lipgloss.JoinVertical(lipgloss.Left,
+			valueStyle.Render("Invite code"),
+			brandStyle.Render(inviteCode),
+			"",
+			mutedStyle.Render("Share this code once. It can be used to create one account."),
+		)
+		return m.formPopupWithActions(background.playersView(), "Invite code", body, "esc close", []actionBarItem{
+			{key: "esc", label: "Close", action: "close"},
+		})
+	}
+
+	details := []string{
+		mutedStyle.Render("Standing"),
+		standingStyle(player.Standing).Render(signedCredits(player.Standing)),
+	}
+	if inviteCode != "" {
+		details = append(details, "", mutedStyle.Render("Invite code"), brandStyle.Render(inviteCode))
+	}
+	if m.playerHasEntries() {
+		details = append(details, "", mutedStyle.Render("Game entries exist; disable this player to keep the history."))
+	} else {
+		details = append(details, "", mutedStyle.Render("No game entries yet; this player can be deleted."))
+	}
+	body := lipgloss.JoinVertical(lipgloss.Left, details...)
+	if m.form != nil && m.playerCanEdit() {
+		body = lipgloss.JoinVertical(lipgloss.Left, m.form.View(), "", body)
+	} else if strings.TrimSpace(player.Username) != "" {
+		body = lipgloss.JoinVertical(lipgloss.Left,
+			mutedStyle.Render("Username"),
+			valueStyle.Render("@"+player.Username),
+			"", body,
+		)
+	}
+
+	popupActions := []actionBarItem{{key: "esc", label: "Close", action: "close"}}
+	footer := "esc close"
+	if m.table.CanManage {
+		if m.playerCanEdit() {
+			popupActions = append([]actionBarItem{{key: "enter", label: "Save", action: "submit", accent: true}}, popupActions...)
+			footer = "enter save   esc close"
+			if inviteCode == "" {
+				popupActions = append([]actionBarItem{{key: "c", label: "Create invite", action: "invite", accent: true}}, popupActions...)
+				footer = "enter save   c invite   esc close"
+			}
+		}
+		if m.playerHasEntries() {
+			popupActions = append([]actionBarItem{{key: "x", label: "Disable", action: "disable", accent: true}}, popupActions...)
+			footer = "x disable   " + footer
+		} else {
+			popupActions = append([]actionBarItem{{key: "d", label: "Delete", action: "delete", accent: true}}, popupActions...)
+			footer = "d delete   " + footer
+		}
+	}
+	return m.formPopupWithActions(background.playersView(), "Player", body, footer, popupActions)
+}
+
+func (m Model) playerCanEdit() bool {
+	if m.table == nil || m.playerIndex < 0 || m.playerIndex >= len(m.table.Players) {
+		return false
+	}
+	return m.table.CanManage && strings.TrimSpace(m.table.Players[m.playerIndex].Username) == ""
+}
+
+func (m Model) playerInviteCodeForCurrentPlayer() string {
+	if m.table == nil || m.playerIndex < 0 || m.playerIndex >= len(m.table.Players) {
+		return ""
+	}
+	if m.playerInviteCodes == nil {
+		return ""
+	}
+	return m.playerInviteCodes[m.table.Players[m.playerIndex].ID]
+}
+
+// formPopup composes a centered modal over the current page. The page remains
+// visible, which makes the modal feel like a focused action instead of a new
+// route.
+func (m Model) formPopup(background, title, content, footer string) string {
+	return m.formPopupWithActions(background, title, content, footer, nil)
+}
+
+func (m Model) formPopupSized(background, title, content, footer string, maxWidth int) string {
+	return m.formPopupSizedWithActions(background, title, content, footer, maxWidth, nil)
+}
+
+func popupWidth(terminalWidth, maxWidth int) int {
+	return min(max(terminalWidth-12, 38), maxWidth)
+}
+
+// popupFormView sizes Huh to the popup's inner width before rendering. Without
+// this, a long field underline wraps inside the modal and looks like a second
+// divider.
+func (m Model) popupFormView(maxWidth int) string {
+	if m.form == nil {
+		return ""
+	}
+	width := popupWidth(m.width, maxWidth)
+	m.form.WithWidth(max(width-8, 20))
+	return m.form.View()
+}
+
+func (m Model) formPopupWithActions(background, title, content, footer string, actions []actionBarItem) string {
+	return m.formPopupSizedWithActions(background, title, content, footer, 72, actions)
+}
+
+func (m Model) formPopupSizedWithActions(background, title, content, footer string, maxWidth int, actions []actionBarItem) string {
+	width := popupWidth(m.width, maxWidth)
+	if len(actions) == 0 {
+		actions = []actionBarItem{{key: "esc", label: "Close", action: "close"}}
+	}
+	if m.err != nil {
+		content = lipgloss.JoinVertical(lipgloss.Left, content, "", errorStyle.Render("! "+friendlyError(m.err)))
+	}
+	contentWidth := max(width-8, 20)
+	popupFooter := popupActionFooter(actions, contentWidth)
+	popup := lipgloss.NewStyle().Width(width).Padding(1, 3).
+		Border(lipgloss.RoundedBorder()).BorderForeground(colorIndigo).
+		Align(lipgloss.Left).
+		Render(lipgloss.JoinVertical(lipgloss.Left, popupHeader(title, contentWidth), "", content, "", popupFooter))
+	return overlayPage(background, popup, m.width, m.height, m.helpBar(footer))
+}
+
+func overlayPage(background, popup string, width, height int, footer string) string {
+	if width <= 0 || height <= 1 {
+		return popup + "\n" + footer
+	}
+	bodyHeight := height - 1
+	baseLines := strings.Split(background, "\n")
+	if len(baseLines) > bodyHeight {
+		baseLines = baseLines[:bodyHeight]
+	}
+	for len(baseLines) < bodyHeight {
+		baseLines = append(baseLines, "")
+	}
+	popupLines := strings.Split(popup, "\n")
+	popupWidth := lipgloss.Width(popup)
+	popupHeight := len(popupLines)
+	x := max((width-popupWidth)/2, 0)
+	y := max((bodyHeight-popupHeight)/2, 0)
+	for row, popupLine := range popupLines {
+		if y+row >= len(baseLines) {
+			break
+		}
+		baseLine := padTerminalLine(baseLines[y+row], width)
+		left := ansi.Cut(baseLine, 0, x)
+		right := ansi.Cut(baseLine, min(x+popupWidth, width), width)
+		popupLine = padTerminalLine(popupLine, popupWidth)
+		baseLines[y+row] = left + "\x1b[0m" + popupLine + "\x1b[0m" + right
+	}
+	return strings.Join(baseLines, "\n") + "\n" + footer
+}
+
+func padTerminalLine(line string, width int) string {
+	missing := width - ansi.StringWidth(line)
+	if missing <= 0 {
+		return line
+	}
+	return line + strings.Repeat(" ", missing)
 }
 
 func (m Model) centeredFormPage(crumb, title, _ string, footer string) string {
@@ -954,7 +1413,7 @@ func (m Model) recordGameView() string {
 	if m.table == nil {
 		return m.pageView(pageHeader(width, "record game"), "")
 	}
-	header := pageHeader(width, "tables", m.table.Table.Name, "record")
+	header := pageHeader(width, m.table.Table.Name, "record")
 	if m.loading {
 		return m.pageView(lipgloss.JoinVertical(lipgloss.Left, header, "", m.spinner.View()+"  "+valueStyle.Render(m.status)), "please wait")
 	}
@@ -967,14 +1426,40 @@ func (m Model) recordGameView() string {
 	case recordPlayersPhase:
 		body = m.recordPlayerList(width)
 	case recordChipCountsPhase:
-		body = m.recordChipCountView()
+		background := m
+		background.recordPhase = recordPlayersPhase
+		background.form = nil
+		background.err = nil
+		return m.formPopupSizedWithActions(background.recordGameView(), "Player earnings", m.recordChipCountView(), recordFooter(m.recordPhase, m.recordPreview != nil), 58, []actionBarItem{
+			{key: "enter", label: "Save", action: "submit", accent: true},
+			{key: "esc", label: "Close", action: "close"},
+		})
 	case recordReviewPhase:
 		body = m.recordReviewView(width)
 	}
 	if m.err != nil {
 		body = lipgloss.JoinVertical(lipgloss.Center, body, "", errorStyle.Render("! "+friendlyError(m.err)))
 	}
-	return m.pageView(lipgloss.JoinVertical(lipgloss.Left, header, "", body), recordFooter(m.recordPhase, m.recordPreview != nil))
+	actions := actionBar(m.recordActionItems(), "")
+	return m.pageView(lipgloss.JoinVertical(lipgloss.Left, header, "", actions, "", body), recordFooter(m.recordPhase, m.recordPreview != nil))
+}
+
+func (m Model) recordActionItems() []actionBarItem {
+	items := []actionBarItem{{key: "esc", label: "Back", action: "back"}}
+	if m.recordPhase == recordPlayersPhase && m.table.CanManage {
+		items = append([]actionBarItem{{key: "c", label: "Add player", action: "create", accent: true}}, items...)
+		if m.recordSelectedPlayerIsEntered() {
+			items = append([]actionBarItem{{key: "e", label: "Edit earning", action: "edit"}}, items...)
+			items = append([]actionBarItem{{key: "d", label: "Clear earning", action: "delete"}}, items...)
+		}
+		if m.allSelectedRecordingsEntered() {
+			items = append([]actionBarItem{{key: "r", label: "Review game", action: "review", accent: true}}, items...)
+		}
+	}
+	if m.recordPhase == recordReviewPhase && m.table.CanManage {
+		items = append([]actionBarItem{{key: "r", label: "Record game", action: "record", accent: true}}, items...)
+	}
+	return items
 }
 
 func recordFooter(phase recordPhase, previewed bool) string {
@@ -984,7 +1469,7 @@ func recordFooter(phase recordPhase, previewed bool) string {
 	case recordFormatPhase:
 		return "↑↓ move   enter choose format"
 	case recordPlayersPhase:
-		return "↑↓ move   space toggle   enter continue"
+		return "↑↓ move   space toggle   enter edit/continue   c add player"
 	case recordChipCountsPhase:
 		return "tab next   enter next player"
 	case recordReviewPhase:
@@ -1027,7 +1512,11 @@ func (m Model) recordPlayerList(width int) string {
 		if m.recordSelected[player.ID] {
 			selected = "✓"
 		}
-		lines = append(lines, style.Render(fmt.Sprintf("%s[%s] %s  %s", marker, selected, player.Name, signedCredits(player.Standing))))
+		state := ""
+		if m.recordEntered[player.ID] {
+			state = "  " + lipgloss.NewStyle().Foreground(colorGreen).Render("saved")
+		}
+		lines = append(lines, style.Render(fmt.Sprintf("%s[%s] %s  %s%s", marker, selected, displayTablePlayerName(player, m.table.Table.HostUsername), signedCredits(player.Standing), state)))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -1045,8 +1534,8 @@ func (m Model) recordChipCountView() string {
 			finalValue += chip.Value * count
 		}
 	}
-	return lipgloss.JoinVertical(lipgloss.Center,
-		brandStyle.Render(fmt.Sprintf("Final chips · %s", player.Name)),
+	return lipgloss.JoinVertical(lipgloss.Left,
+		brandStyle.Render(fmt.Sprintf("Final chips · %s", displayTablePlayerName(player, m.table.Table.HostUsername))),
 		mutedStyle.Render(fmt.Sprintf("%s  ·  %s", format.Name, credits(format.RequiredEntry))),
 		valueStyle.Render(fmt.Sprintf("Final value  %s  ·  P/L  %s", credits(finalValue), signedCredits(finalValue-format.RequiredEntry))),
 		"", m.form.View())
@@ -1060,7 +1549,7 @@ func (m Model) recordReviewView(width int) string {
 	game := m.recordPreview
 	lines = append(lines, valueStyle.Render(fmt.Sprintf("Expected %s  ·  Actual %s", credits(game.ExpectedTableValue), credits(game.ActualTableValue))), "")
 	for _, participant := range game.Participants {
-		lines = append(lines, fmt.Sprintf("%-18s %8s  %s", truncate(participant.PlayerName, 18), signedCredits(participant.ProfitLoss), standingStyle(participant.EndingStanding).Render(signedCredits(participant.EndingStanding))))
+		lines = append(lines, fmt.Sprintf("%-18s %8s  %s", truncate(displayParticipantName(participant.PlayerName, m.table.Table.HostUsername), 18), signedCredits(participant.ProfitLoss), standingStyle(participant.EndingStanding).Render(signedCredits(participant.EndingStanding))))
 	}
 	lines = append(lines, "", lipgloss.NewStyle().Foreground(colorGreen).Render("✓ Balanced and ready to record"))
 	return strings.Join(lines, "\n")
@@ -1079,10 +1568,21 @@ func chipStyle(color string) lipgloss.Style {
 		value = colorIndigo
 	case "green":
 		value = colorGreen
-	case "purple":
+	case "yellow":
+		value = lipgloss.Color("#F2C94C")
+	case "orange":
+		value = lipgloss.Color("#F2994A")
+	case "gray", "grey":
+		value = lipgloss.Color("#8B8B92")
+	case "pink":
 		value = colorFuchsia
 	}
 	return lipgloss.NewStyle().Foreground(value)
+}
+
+// chipSwatch renders a compact filled rectangle, like a terminal color block.
+func chipSwatch(color string) string {
+	return chipStyle(color).Render("██")
 }
 
 func (m *Model) resetTableCreateForm() {
@@ -1093,18 +1593,51 @@ func (m *Model) resetTableCreateForm() {
 }
 
 func (m *Model) resetFormatCreateForm() {
-	m.formatForm = &formatFormValues{}
+	colors := []string{"white", "black", "green", "blue", "red", "yellow", "orange", "gray", "pink"}
+	m.formatForm = &formatFormValues{chips: make([]chipFormValue, len(colors))}
+	fields := []huh.Field{
+		newCenteredInput("Format name", "", "saturday 2k", &m.formatForm.name, 32, false, required("enter a format name")).WithLeftAlign(true),
+		newCenteredInput("Total buy-in", "", "2000", &m.formatForm.requiredEntry, 10, false, positiveIntegerText).WithLeftAlign(true),
+	}
+	chipSpecs := make([]chipInputSpec, 0, len(colors))
+	for index, color := range colors {
+		m.formatForm.chips[index].color = color
+		chipSpecs = append(chipSpecs, chipInputSpec{color: color, placeholder: "value", value: &m.formatForm.chips[index].value})
+	}
+	fields = append(fields, newHorizontalChipInputs(chipSpecs))
 	m.form = huh.NewForm(huh.NewGroup(
-		newCenteredInput("Format name", "", "Saturday 2K", &m.formatForm.name, 48, false, required("Enter a format name")),
-		newCenteredInput("Required entry", "", "2000", &m.formatForm.requiredEntry, 10, false, positiveIntegerText),
-		newCenteredInput("Chips", "", "white=10, black=100", &m.formatForm.chips, 160, false, chipSpec),
-	)).WithTheme(huh.ThemeFunc(centeredFormTheme)).WithShowHelp(false).WithShowErrors(false)
+		fields...,
+	)).WithTheme(huh.ThemeFunc(popupFormTheme)).WithShowHelp(false).WithShowErrors(false)
 	m.resizeForm()
 }
 
 func (m *Model) resetPlayerCreateForm() {
 	m.playerForm = &playerFormValues{}
-	m.form = huh.NewForm(huh.NewGroup(newCenteredInput("Player name", "", "Tahseen", &m.playerForm.name, 48, false, required("Enter a player name")))).WithTheme(huh.ThemeFunc(centeredFormTheme)).WithShowHelp(false).WithShowErrors(false)
+	m.form = huh.NewForm(huh.NewGroup(
+		newCenteredInput("Player name", "", "luna", &m.playerForm.name, 48, false, required("enter a player name")).WithLeftAlign(true),
+		huh.NewConfirm().Title("Generate invite code").Affirmative("Yes").Negative("No").Value(&m.playerForm.generateInvite),
+	)).WithTheme(huh.ThemeFunc(popupFormTheme)).WithShowHelp(false).WithShowErrors(false)
+	m.resizeForm()
+}
+
+func (m *Model) resetPlayerEditForm() {
+	if m.table == nil || m.playerIndex < 0 || m.playerIndex >= len(m.table.Players) {
+		m.form = nil
+		return
+	}
+	player := m.table.Players[m.playerIndex]
+	if strings.TrimSpace(player.Username) != "" || !m.table.CanManage {
+		m.playerForm, m.form = nil, nil
+		return
+	}
+	m.playerForm = &playerFormValues{name: player.Name}
+	fields := []huh.Field{
+		newCenteredInput("Player name", "", player.Name, &m.playerForm.name, 48, false, required("enter a player name")).WithLeftAlign(true),
+	}
+	if m.playerInviteCodeForCurrentPlayer() == "" {
+		fields = append(fields, huh.NewConfirm().Title("Generate invite code").Affirmative("Yes").Negative("No").Value(&m.playerForm.generateInvite))
+	}
+	m.form = huh.NewForm(huh.NewGroup(fields...)).WithTheme(huh.ThemeFunc(popupFormTheme)).WithShowHelp(false).WithShowErrors(false)
 	m.resizeForm()
 }
 
@@ -1131,15 +1664,16 @@ func (m *Model) resetRecordChipForm() {
 		values = append(values, value)
 	}
 	m.recordChipValues = values
-	fields := make([]*centeredInput, 0, len(format.Chips))
+	chipSpecs := make([]chipInputSpec, 0, len(format.Chips))
 	for index, chip := range format.Chips {
-		fields = append(fields, newCenteredInput(chip.Label, "", fmt.Sprintf("value %d", chip.Value), &m.recordChipValues[index], 10, false, nonNegativeIntegerText))
+		chipSpecs = append(chipSpecs, chipInputSpec{
+			color:       chip.Color,
+			placeholder: "value",
+			value:       &m.recordChipValues[index],
+			validate:    nonNegativeIntegerText,
+		})
 	}
-	groups := make([]huh.Field, 0, len(fields))
-	for _, field := range fields {
-		groups = append(groups, field)
-	}
-	m.form = huh.NewForm(huh.NewGroup(groups...)).WithTheme(huh.ThemeFunc(centeredFormTheme)).WithShowHelp(false).WithShowErrors(false)
+	m.form = huh.NewForm(huh.NewGroup(newHorizontalChipInputs(chipSpecs))).WithTheme(huh.ThemeFunc(popupFormTheme)).WithShowHelp(false).WithShowErrors(false)
 	m.resizeForm()
 }
 
@@ -1222,8 +1756,37 @@ func parseChipSpec(value string) []api.ChipDenomination {
 	return chips
 }
 
+func parseChipRows(rows []chipFormValue) ([]api.ChipDenomination, error) {
+	chips := make([]api.ChipDenomination, 0, len(rows))
+	seen := map[string]bool{}
+	for index, row := range rows {
+		color := strings.ToLower(strings.TrimSpace(row.color))
+		value := strings.TrimSpace(row.value)
+		if value == "" {
+			continue
+		}
+		if color == "" {
+			return nil, errors.New("complete each chip denomination")
+		}
+		amount, err := strconv.Atoi(value)
+		if err != nil || amount <= 0 {
+			return nil, errors.New("chip denominations must be positive whole numbers")
+		}
+		if seen[color] {
+			return nil, errors.New("each chip color can appear only once")
+		}
+		seen[color] = true
+		chips = append(chips, api.ChipDenomination{Label: color, Color: color, Value: amount, Position: index})
+	}
+	if len(chips) == 0 {
+		return nil, errors.New("add at least one chip denomination")
+	}
+	return chips, nil
+}
+
 func (m Model) isTableFormScreen() bool {
 	return m.screen == tableCreateScreen || m.screen == formatCreateScreen || m.screen == playerCreateScreen ||
+		(m.screen == playerDetailScreen && m.form != nil) ||
 		(m.screen == recordGameScreen && (m.recordPhase == recordDetailsPhase || m.recordPhase == recordChipCountsPhase))
 }
 
@@ -1265,7 +1828,7 @@ func (m Model) createTableCmd() tea.Cmd {
 }
 
 func (m Model) createPlayerCmd() tea.Cmd {
-	tableID, name := m.table.Table.ID, m.playerForm.name
+	tableID, name, generateInvite := m.table.Table.ID, strings.ToLower(strings.TrimSpace(m.playerForm.name)), m.playerForm.generateInvite
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), operationTimeout)
 		defer cancel()
@@ -1273,17 +1836,110 @@ func (m Model) createPlayerCmd() tea.Cmd {
 		if err != nil {
 			return operationFailedMsg{err: err}
 		}
-		return tablePlayerCreatedMsg{player: player}
+		var inviteCode string
+		if generateInvite {
+			// TODO: replace this account invite with a player-bound invite once
+			// the API exposes the player claim endpoint.
+			invitation, inviteErr := m.api.CreateInvitation(ctx, m.token)
+			if inviteErr != nil {
+				return operationFailedMsg{err: inviteErr}
+			}
+			inviteCode = invitation.Code
+		}
+		return tablePlayerCreatedMsg{player: player, inviteCode: inviteCode}
+	}
+}
+
+func (m Model) updatePlayerCmd() tea.Cmd {
+	tableID := m.table.Table.ID
+	playerID := m.table.Players[m.playerIndex].ID
+	name := strings.ToLower(strings.TrimSpace(m.playerForm.name))
+	generateInvite := m.playerForm.generateInvite
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), operationTimeout)
+		defer cancel()
+		player, err := m.api.UpdateTablePlayer(ctx, m.token, tableID, playerID, name)
+		if err != nil {
+			return operationFailedMsg{err: err}
+		}
+		var inviteCode string
+		if generateInvite {
+			invitation, inviteErr := m.api.CreateInvitation(ctx, m.token)
+			if inviteErr != nil {
+				return operationFailedMsg{err: inviteErr}
+			}
+			inviteCode = invitation.Code
+		}
+		return tablePlayerUpdatedMsg{player: player, inviteCode: inviteCode}
+	}
+}
+
+func (m Model) createPlayerInviteCmd() tea.Cmd {
+	if m.table == nil || m.playerIndex < 0 || m.playerIndex >= len(m.table.Players) {
+		return nil
+	}
+	playerID := m.table.Players[m.playerIndex].ID
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), operationTimeout)
+		defer cancel()
+		invitation, err := m.api.CreateInvitation(ctx, m.token)
+		if err != nil {
+			return operationFailedMsg{err: err}
+		}
+		return playerInviteCreatedMsg{playerID: playerID, code: invitation.Code}
+	}
+}
+
+func (m Model) playerHasEntries() bool {
+	if m.table == nil || m.playerIndex < 0 || m.playerIndex >= len(m.table.Players) {
+		return false
+	}
+	playerID := m.table.Players[m.playerIndex].ID
+	for _, game := range m.table.Games {
+		for _, participant := range game.Participants {
+			if participant.PlayerID == playerID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (m Model) deletePlayerCmd() tea.Cmd {
+	tableID := m.table.Table.ID
+	playerID := m.table.Players[m.playerIndex].ID
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), operationTimeout)
+		defer cancel()
+		if err := m.api.DeleteTablePlayer(ctx, m.token, tableID, playerID); err != nil {
+			return operationFailedMsg{err: err}
+		}
+		return tablePlayerRemovedMsg{playerID: playerID}
+	}
+}
+
+func (m Model) disablePlayerCmd() tea.Cmd {
+	tableID := m.table.Table.ID
+	playerID := m.table.Players[m.playerIndex].ID
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), operationTimeout)
+		defer cancel()
+		if err := m.api.DisableTablePlayer(ctx, m.token, tableID, playerID); err != nil {
+			return operationFailedMsg{err: err}
+		}
+		return tablePlayerRemovedMsg{playerID: playerID, disabled: true}
 	}
 }
 
 func (m Model) createFormatCmd() tea.Cmd {
 	tableID, form := m.table.Table.ID, *m.formatForm
 	entry, _ := strconv.Atoi(strings.TrimSpace(form.requiredEntry))
+	chips, _ := parseChipRows(form.chips)
+	name := strings.ToLower(strings.TrimSpace(form.name))
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), operationTimeout)
 		defer cancel()
-		format, err := m.api.CreateGameFormat(ctx, m.token, tableID, form.name, entry, parseChipSpec(form.chips))
+		format, err := m.api.CreateGameFormat(ctx, m.token, tableID, name, entry, chips)
 		if err != nil {
 			return operationFailedMsg{err: err}
 		}

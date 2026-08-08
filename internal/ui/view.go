@@ -209,6 +209,15 @@ func (m Model) appMenuView() string {
 }
 
 func (m Model) usersView() string {
+	if m.notice != "" {
+		background := m
+		background.notice = ""
+		return m.formPopup(background.usersView(), "Invite code", lipgloss.JoinVertical(lipgloss.Center,
+			valueStyle.Render(m.notice),
+			"",
+			mutedStyle.Render("Share this code once. It can be used to create one account."),
+		), "esc close")
+	}
 	if m.loading {
 		return m.pageView(m.loadingViewBody(), usersFooter())
 	}
@@ -710,7 +719,7 @@ func friendlyError(err error) string {
 	if err == nil {
 		return ""
 	}
-	message := err.Error()
+	message := strings.ToLower(err.Error())
 	if len(message) > 120 {
 		return message[:119] + "…"
 	}

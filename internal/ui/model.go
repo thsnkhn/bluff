@@ -37,6 +37,7 @@ const (
 	formatsScreen
 	formatDetailScreen
 	playersScreen
+	playerDetailScreen
 	gamesScreen
 	gameDetailScreen
 	tableCreateScreen
@@ -77,11 +78,17 @@ type tableFormValues struct {
 type formatFormValues struct {
 	name          string
 	requiredEntry string
-	chips         string
+	chips         []chipFormValue
 }
 
 type playerFormValues struct {
-	name string
+	name           string
+	generateInvite bool
+}
+
+type chipFormValue struct {
+	color string
+	value string
 }
 
 type recordPhase int
@@ -132,6 +139,9 @@ type API interface {
 	Table(context.Context, string, string) (api.TableDetail, error)
 	CreateTable(context.Context, string, string) (api.TableSummary, error)
 	CreateTablePlayer(context.Context, string, string, string) (api.TablePlayer, error)
+	UpdateTablePlayer(context.Context, string, string, string, string) (api.TablePlayer, error)
+	DeleteTablePlayer(context.Context, string, string, string) error
+	DisableTablePlayer(context.Context, string, string, string) error
 	CreateGameFormat(context.Context, string, string, string, int, []api.ChipDenomination) (api.GameFormat, error)
 	PreviewTableGame(context.Context, string, string, string, string, string, []api.GameParticipantInput) (api.TableGame, error)
 	RecordTableGame(context.Context, string, string, string, string, string, []api.GameParticipantInput) (api.TableDetail, error)
@@ -178,6 +188,7 @@ type Model struct {
 	tables             []api.TableSummary
 	table              *api.TableDetail
 	tableIndex         int
+	tableNavIndex      int
 	formatIndex        int
 	playerIndex        int
 	gameIndex          int
@@ -193,13 +204,17 @@ type Model struct {
 	recordPlayerIndex  int
 	recordSelected     map[string]bool
 	recordCounts       map[string]map[string]int
+	recordEntered      map[string]bool
 	recordChipValues   []string
 	recordPreview      *api.TableGame
 	recordQuickAdd     bool
 	recordQuickAddID   string
+	playerInviteCodes  map[string]string
+	playerInvitePopup  bool
 	searchActive       bool
 	searchQuery        string
 	notice             string
+	pendingTableNotice string
 	connected          bool
 	checkingConnection bool
 	updateAvailable    *api.ClientRelease
@@ -210,13 +225,14 @@ func New(client API, store CredentialStore, build BuildInfo, installers ...Updat
 	busy := spinner.New(spinner.WithSpinner(spinner.MiniDot))
 	busy.Style = lipgloss.NewStyle().Foreground(colorFuchsia)
 	model := Model{
-		api:     client,
-		store:   store,
-		build:   build,
-		screen:  bootScreen,
-		spinner: busy,
-		loading: true,
-		status:  "Opening the table",
+		api:               client,
+		store:             store,
+		build:             build,
+		screen:            bootScreen,
+		spinner:           busy,
+		loading:           true,
+		status:            "Opening the table",
+		playerInviteCodes: make(map[string]string),
 	}
 	if len(installers) > 0 {
 		model.updater = installers[0]
@@ -335,6 +351,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Batch(m.spinner.Tick, m.loadUsersCmd())
 			case "esc", "backspace":
 				m.usersActionHover = ""
+				if m.notice != "" {
+					m.notice = ""
+					return m, nil
+				}
 				m.screen, m.err, m.notice = appMenuScreen, nil, ""
 				return m, nil
 			}
@@ -481,6 +501,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.resizeForm()
 			return m, m.form.Init()
 		}
+		if m.screen == playerDetailScreen && m.playerCanEdit() {
+			m.resetPlayerEditForm()
+			if m.form != nil {
+				return m, m.form.Init()
+			}
+		}
 		if m.isTableScreen() {
 			m.loading = false
 			return m, nil
@@ -514,7 +540,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// a successfully loaded detail page.
 			m.screen = tableDetailScreen
 		}
-		m.loading, m.table, m.err, m.notice = false, &msg.table, nil, ""
+		m.tableNavIndex = int(tableOverviewSection)
+		m.loading, m.table, m.err, m.notice = false, &msg.table, nil, m.pendingTableNotice
+		m.pendingTableNotice = ""
 		if m.recordQuickAdd && m.recordQuickAddID != "" {
 			for index, player := range m.table.Players {
 				if player.ID == m.recordQuickAddID {
@@ -537,14 +565,97 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading, m.status, m.err = true, "Opening table", nil
 		return m, tea.Batch(m.spinner.Tick, m.tableCmd(msg.table.ID))
 	case tablePlayerCreatedMsg:
+		if m.playerInviteCodes == nil {
+			m.playerInviteCodes = make(map[string]string)
+		}
+		if m.table != nil {
+			alreadyPresent := false
+			for _, player := range m.table.Players {
+				if player.ID == msg.player.ID {
+					alreadyPresent = true
+					break
+				}
+			}
+			if !alreadyPresent {
+				m.table.Players = append(m.table.Players, msg.player)
+			}
+		}
 		if m.recordQuickAdd {
 			m.recordQuickAddID = msg.player.ID
 		}
-		m.loading, m.status, m.err = true, "Refreshing players", nil
-		return m, tea.Batch(m.spinner.Tick, m.tableCmd(m.table.Table.ID))
+		m.screen = playersScreen
+		m.form = nil
+		if msg.inviteCode != "" {
+			m.playerInviteCodes[msg.player.ID] = msg.inviteCode
+			m.pendingTableNotice = "Invite code  " + msg.inviteCode + "  ·  share it once"
+		}
+		m.loading, m.status, m.err = false, "", nil
+		if m.recordQuickAdd {
+			m.recordSelected[msg.player.ID] = true
+			m.playerIndex = len(m.table.Players) - 1
+			m.recordQuickAdd = false
+			m.screen, m.recordPhase = recordGameScreen, recordPlayersPhase
+		}
+		return m, nil
+	case tablePlayerUpdatedMsg:
+		if m.playerInviteCodes == nil {
+			m.playerInviteCodes = make(map[string]string)
+		}
+		if m.table != nil {
+			for index, player := range m.table.Players {
+				if player.ID == msg.player.ID {
+					m.table.Players[index] = msg.player
+					m.playerIndex = index
+					break
+				}
+			}
+		}
+		m.form = nil
+		m.loading, m.status, m.err = false, "", nil
+		if msg.inviteCode != "" {
+			m.playerInviteCodes[msg.player.ID] = msg.inviteCode
+			m.playerInvitePopup = true
+		} else {
+			m.resetPlayerEditForm()
+			if m.form != nil {
+				return m, m.form.Init()
+			}
+		}
+		return m, nil
+	case playerInviteCreatedMsg:
+		if m.playerInviteCodes == nil {
+			m.playerInviteCodes = make(map[string]string)
+		}
+		m.playerInviteCodes[msg.playerID] = msg.code
+		m.playerInvitePopup = true
+		m.loading, m.status, m.err = false, "", nil
+		return m, nil
+	case tablePlayerRemovedMsg:
+		if m.table != nil {
+			players := m.table.Players[:0]
+			for _, player := range m.table.Players {
+				if player.ID != msg.playerID {
+					players = append(players, player)
+				}
+			}
+			m.table.Players = players
+			m.playerIndex = max(min(m.playerIndex, len(m.table.Players)-1), 0)
+		}
+		m.screen, m.loading, m.status, m.err = playersScreen, false, "", nil
+		if msg.disabled {
+			m.notice = "Player disabled"
+		} else {
+			m.notice = "Player deleted"
+		}
+		return m, nil
 	case tableFormatCreatedMsg:
-		m.loading, m.status, m.err = true, "Refreshing formats", nil
-		return m, tea.Batch(m.spinner.Tick, m.tableCmd(m.table.Table.ID))
+		if m.table != nil {
+			m.table.Formats = append(m.table.Formats, msg.format)
+		}
+		m.screen = formatsScreen
+		m.form = nil
+		m.loading, m.status, m.err = false, "", nil
+		return m, nil
 	case tableGamePreviewedMsg:
 		m.loading, m.recordPreview, m.err = false, &msg.game, nil
 		return m, nil
@@ -616,10 +727,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	if m.isTableFormScreen() && !m.loading {
+	if m.isTableFormScreen() && !m.loading && m.form != nil {
 		updated, cmd := m.form.Update(msg)
 		if form, ok := updated.(*huh.Form); ok {
 			m.form = form
+		}
+		if (m.screen == playerCreateScreen || m.screen == playerDetailScreen) && m.playerForm != nil {
+			m.playerForm.name = strings.ToLower(m.playerForm.name)
 		}
 		if m.form.State == huh.StateCompleted {
 			return m.handleTableFormCompleted()
@@ -677,6 +791,8 @@ func (m Model) View() tea.View {
 		content = m.formatCreateView()
 	case playerCreateScreen:
 		content = m.playerCreateView()
+	case playerDetailScreen:
+		content = m.playerDetailView()
 	case recordGameScreen:
 		content = m.recordGameView()
 	}
@@ -696,9 +812,9 @@ func (m *Model) resetLoginForm() {
 	m.login = &loginValues{username: username}
 	m.form = huh.NewForm(huh.NewGroup(
 		newCenteredInput("Username", "", "bluff", &m.login.username, 32, false,
-			required("Enter your username")),
+			required("enter your username")),
 		newCenteredInput("Password", "", "••••••••", &m.login.password, 128, true,
-			required("Enter your password")),
+			required("enter your password")),
 	)).WithTheme(huh.ThemeFunc(centeredFormTheme)).WithShowHelp(false).WithShowErrors(false)
 }
 
@@ -719,7 +835,7 @@ func (m *Model) resetInviteAccountForm() {
 	m.invite = &inviteValues{code: code, username: username}
 	m.form = huh.NewForm(huh.NewGroup(
 		newCenteredInput("Username", "", "table-friend",
-			&m.invite.username, 32, false, required("Enter a username")),
+			&m.invite.username, 32, false, required("enter a username")),
 		newCenteredInput("Password", "", "••••••••", &m.invite.password, 128, true, validPassword),
 	)).WithTheme(huh.ThemeFunc(centeredFormTheme)).WithShowHelp(false).WithShowErrors(false)
 }
@@ -736,6 +852,31 @@ func centeredFormTheme(isDark bool) *huh.Styles {
 	return styles
 }
 
+func popupFormTheme(isDark bool) *huh.Styles {
+	styles := huh.ThemeCharm(isDark)
+	// Keep popup fields compact. The default two-line group separator leaves
+	// an unnecessary gap between the buy-in and chip rows.
+	styles.FieldSeparator = lipgloss.NewStyle().SetString("\n")
+	// Match Huh's focused treatment: only the active field gets the left edge
+	// marker. Popup fields do not use underlines.
+	styles.Focused.Base = styles.Focused.Base.BorderLeft(true).BorderBottom(false).PaddingLeft(0).Align(lipgloss.Left)
+	styles.Blurred.Base = styles.Blurred.Base.BorderLeft(false).BorderBottom(false).PaddingLeft(0).Align(lipgloss.Left)
+	leftAlignField := func(field *huh.FieldStyles) {
+		field.Title = field.Title.Align(lipgloss.Left)
+		field.Description = field.Description.Align(lipgloss.Left)
+		field.ErrorMessage = field.ErrorMessage.Align(lipgloss.Left)
+		field.Option = field.Option.Align(lipgloss.Left)
+		field.TextInput.Placeholder = field.TextInput.Placeholder.Align(lipgloss.Left)
+		field.TextInput.Text = field.TextInput.Text.Align(lipgloss.Left)
+		field.TextInput.CursorText = field.TextInput.CursorText.Align(lipgloss.Left)
+	}
+	leftAlignField(&styles.Focused)
+	leftAlignField(&styles.Blurred)
+	styles.Form.Base = styles.Form.Base.Align(lipgloss.Left)
+	styles.Group.Base = styles.Group.Base.Align(lipgloss.Left)
+	return styles
+}
+
 func (m *Model) resizeForm() {
 	if m.form == nil {
 		return
@@ -745,8 +886,11 @@ func (m *Model) resizeForm() {
 	if m.screen == inviteAccountScreen {
 		height = 18
 	}
-	if m.screen == formatCreateScreen || m.screen == recordGameScreen {
-		height = 22
+	if m.screen == formatCreateScreen {
+		height = 14
+	}
+	if m.screen == recordGameScreen {
+		height = 34
 	}
 	m.form.WithWidth(width).WithHeight(min(max(m.height-18, 8), height))
 }

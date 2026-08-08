@@ -170,6 +170,30 @@ func (c *Client) CreateTablePlayer(ctx context.Context, token, tableID, name str
 	return result.Player, err
 }
 
+// UpdateTablePlayer changes the name of an active table player.
+func (c *Client) UpdateTablePlayer(ctx context.Context, token, tableID, playerID, name string) (TablePlayer, error) {
+	result, err := request[struct {
+		Player TablePlayer `json:"player"`
+	}](ctx, c, http.MethodPatch, tablePath(tableID)+"/players/"+url.PathEscape(playerID), token, map[string]string{"name": name})
+	return result.Player, err
+}
+
+// DeleteTablePlayer removes a player profile that has never appeared in a game.
+func (c *Client) DeleteTablePlayer(ctx context.Context, token, tableID, playerID string) error {
+	_, err := request[struct {
+		Deleted bool `json:"deleted"`
+	}](ctx, c, http.MethodDelete, tablePath(tableID)+"/players/"+url.PathEscape(playerID), token, nil)
+	return err
+}
+
+// DisableTablePlayer keeps a player's history while removing them from active lists.
+func (c *Client) DisableTablePlayer(ctx context.Context, token, tableID, playerID string) error {
+	_, err := request[struct {
+		Disabled bool `json:"disabled"`
+	}](ctx, c, http.MethodPatch, tablePath(tableID)+"/players/"+url.PathEscape(playerID), token, map[string]bool{"active": false})
+	return err
+}
+
 // CreateGameFormat adds a chip-based game format to a table.
 func (c *Client) CreateGameFormat(ctx context.Context, token, tableID, name string, requiredEntry int, chips []ChipDenomination) (GameFormat, error) {
 	result, err := request[struct {

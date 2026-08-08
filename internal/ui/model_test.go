@@ -57,6 +57,11 @@ func (f fakeAPI) CreateTable(context.Context, string, string) (api.TableSummary,
 func (f fakeAPI) CreateTablePlayer(context.Context, string, string, string) (api.TablePlayer, error) {
 	return api.TablePlayer{}, errors.New("not implemented")
 }
+func (f fakeAPI) UpdateTablePlayer(context.Context, string, string, string, string) (api.TablePlayer, error) {
+	return api.TablePlayer{}, errors.New("not implemented")
+}
+func (f fakeAPI) DeleteTablePlayer(context.Context, string, string, string) error  { return nil }
+func (f fakeAPI) DisableTablePlayer(context.Context, string, string, string) error { return nil }
 func (f fakeAPI) CreateGameFormat(context.Context, string, string, string, int, []api.ChipDenomination) (api.GameFormat, error) {
 	return api.GameFormat{}, errors.New("not implemented")
 }
@@ -472,7 +477,7 @@ func TestTableRecordFlowOffersQuickAddAndGameHistory(t *testing.T) {
 	model.screen, model.loading = recordGameScreen, false
 	model.recordPhase = recordPlayersPhase
 	model.recordSelected = map[string]bool{}
-	updated, _, handled := model.updateTableKey("a")
+	updated, _, handled := model.updateTableKey("c")
 	if !handled || updated.(Model).screen != playerCreateScreen {
 		t.Fatalf("quick add transition = %#v, handled=%v", updated, handled)
 	}
@@ -489,6 +494,31 @@ func TestTableRecordFlowOffersQuickAddAndGameHistory(t *testing.T) {
 	quickAdd.screen = tableDetailScreen
 	if !strings.Contains(quickAdd.View().Content, "♛") {
 		t.Fatal("table host is missing the crown marker")
+	}
+}
+
+func TestTableWorkspaceOverviewUsesChartsAndLocalNavigation(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+	model.width, model.height = 120, 40
+	model.screen, model.loading = tableDetailScreen, false
+	model.table = &api.TableDetail{
+		Table:   api.TableSummary{Name: "#saturday-table", HostUsername: "bluff"},
+		Players: []api.TablePlayer{{Name: "Alice", Standing: 120}, {Name: "Bob", Standing: -40}},
+	}
+	view := ansi.Strip(model.View().Content)
+	for _, want := range []string{"PLAYERS", "FORMATS", "GAMES", "Player standings", "Chip values"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("overview is missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "Recent activity") {
+		t.Fatal("overview still contains recent activity")
+	}
+	for _, item := range tableDetailActionItems(false) {
+		if item.action == "players" || item.action == "formats" || item.action == "games" {
+			t.Fatalf("table action bar still contains navigation action %q", item.action)
+		}
 	}
 }
 
