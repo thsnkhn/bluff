@@ -62,7 +62,7 @@ func (m Model) currentTableSection() tableSection {
 		return tablePlayersSection
 	case playerDetailScreen:
 		return tablePlayersSection
-	case formatsScreen, formatDetailScreen:
+	case formatsScreen:
 		return tableFormatsSection
 	case gamesScreen, gameDetailScreen:
 		return tableGamesSection
@@ -110,7 +110,13 @@ func (m Model) tableWorkspace(active tableSection, items []actionBarItem, conten
 		actions = searchActionBar(items, "", m.searchActive, m.searchQuery)
 	}
 
-	main := lipgloss.NewStyle().Width(metrics.contentWidth).Render(content)
+	mainWidth := metrics.contentWidth
+	if active == tableOverviewSection {
+		// The overview stats bar is a full-width frame. Give the overview the
+		// complete workspace width instead of the narrower list inset.
+		mainWidth = metrics.width
+	}
+	main := lipgloss.NewStyle().Width(mainWidth).Render(content)
 	parts := []string{header, ""}
 	if active != tableOverviewSection {
 		parts = append(parts, actions, "")

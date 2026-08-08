@@ -30,21 +30,11 @@ func newCenteredInput(
 	password bool,
 	validate func(string) error,
 ) *centeredInput {
-	input := huh.NewInput().
-		Title(title).
-		Description(description).
-		Prompt("").
-		Placeholder(placeholder).
-		Value(value)
-	if validate != nil {
-		input.Validate(validate)
-	}
-	if charLimit > 0 {
-		input.CharLimit(charLimit)
-	}
-	if password {
-		input.EchoMode(huh.EchoModePassword)
-	}
+	// Keep this legacy layout adapter on top of the same stock Huh input used
+	// by the rest of the application. Composite fields can still opt into the
+	// centered rendering without maintaining a second input implementation.
+	input := newHuhInput(title, description, placeholder, value, charLimit, password, validate).
+		Prompt("")
 	return &centeredInput{Input: input, value: value, placeholder: placeholder}
 }
 

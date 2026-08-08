@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
@@ -65,6 +66,9 @@ func (f fakeAPI) DisableTablePlayer(context.Context, string, string, string) err
 func (f fakeAPI) CreateGameFormat(context.Context, string, string, string, int, []api.ChipDenomination) (api.GameFormat, error) {
 	return api.GameFormat{}, errors.New("not implemented")
 }
+func (f fakeAPI) UpdateGameFormat(context.Context, string, string, string, string, int, []api.ChipDenomination) (api.GameFormat, error) {
+	return api.GameFormat{}, errors.New("not implemented")
+}
 func (f fakeAPI) PreviewTableGame(context.Context, string, string, string, string, string, []api.GameParticipantInput) (api.TableGame, error) {
 	return api.TableGame{}, errors.New("not implemented")
 }
@@ -80,11 +84,12 @@ type fakeStore struct {
 
 type fakeInstaller struct {
 	release api.ClientRelease
+	err     error
 }
 
 func (f *fakeInstaller) Install(_ context.Context, release api.ClientRelease) error {
 	f.release = release
-	return nil
+	return f.err
 }
 
 func (f fakeStore) Load(context.Context) (string, error) { return f.token, f.err }
@@ -131,6 +136,75 @@ func TestRestoreSessionRestartsAfterNewerRelease(t *testing.T) {
 	}
 	if installer.release.Version != "v0.1.4" {
 		t.Fatalf("installer version = %q, want v0.1.4", installer.release.Version)
+	}
+}
+
+func TestBootShowsUpdateProgressBeforeInstalling(t *testing.T) {
+	t.Parallel()
+	model := New(
+		fakeAPI{health: api.HealthStatus{Status: "ok", ClientVersion: "v0.1.6"}},
+		fakeStore{err: credentials.ErrNotFound},
+		BuildInfo{Version: "v0.1.5"},
+		&fakeInstaller{},
+	)
+
+	updated, cmd := model.Update(model.bootHealthCmd()())
+	got := updated.(Model)
+	if cmd == nil {
+		t.Fatal("boot update command is nil")
+	}
+	if got.status != "Downloading update v0.1.6" {
+		t.Fatalf("boot status = %q, want update progress", got.status)
+	}
+}
+
+func TestBootFallsBackToSessionRestoreWithoutUpdate(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{}, fakeStore{err: credentials.ErrNotFound}, BuildInfo{Version: "v0.1.5"})
+
+	updated, cmd := model.Update(model.bootHealthCmd()())
+	got := updated.(Model)
+	if cmd == nil {
+		t.Fatal("session restore command is nil")
+	}
+	if got.status != "Restoring session" {
+		t.Fatalf("boot status = %q, want session restore", got.status)
+	}
+}
+
+func TestUpdateFailureDoesNotPoisonSessionContext(t *testing.T) {
+	t.Parallel()
+	installer := &fakeInstaller{err: context.DeadlineExceeded}
+	model := New(
+		fakeAPI{health: api.HealthStatus{Status: "ok", ClientVersion: "v0.1.6"}},
+		fakeStore{err: credentials.ErrNotFound},
+		BuildInfo{Version: "v0.1.5"},
+		installer,
+	)
+
+	msg := model.restoreSessionCmd()()
+	required, ok := msg.(loginRequiredMsg)
+	if !ok {
+		t.Fatalf("message = %T, want loginRequiredMsg", msg)
+	}
+	if required.err != nil {
+		t.Fatalf("login error = %v, want no keychain error after update failure", required.err)
+	}
+	if required.update == nil || required.update.Version != "v0.1.6" {
+		t.Fatalf("update = %#v, want v0.1.6", required.update)
+	}
+}
+
+func TestConnectionLineUsesConnectingWhileHealthCheckRuns(t *testing.T) {
+	t.Parallel()
+	for _, render := range []func(bool, bool, string) string{connectionLine, compactConnectionLine} {
+		line := render(false, true, "·")
+		if !strings.Contains(line, "Connecting") {
+			t.Fatalf("line = %q, want Connecting", line)
+		}
+		if strings.Contains(line, "Offline") {
+			t.Fatalf("line = %q, must not say Offline while connecting", line)
+		}
 	}
 }
 
@@ -476,7 +550,6 @@ func TestTableRecordFlowOffersQuickAddAndGameHistory(t *testing.T) {
 	}
 	model.screen, model.loading = recordGameScreen, false
 	model.recordPhase = recordPlayersPhase
-	model.recordSelected = map[string]bool{}
 	updated, _, handled := model.updateTableKey("c")
 	if !handled || updated.(Model).screen != playerCreateScreen {
 		t.Fatalf("quick add transition = %#v, handled=%v", updated, handled)
@@ -494,6 +567,107 @@ func TestTableRecordFlowOffersQuickAddAndGameHistory(t *testing.T) {
 	quickAdd.screen = tableDetailScreen
 	if !strings.Contains(quickAdd.View().Content, "♛") {
 		t.Fatal("table host is missing the crown marker")
+	}
+}
+
+func TestRecordPlayerEntryOpensEarningsDirectly(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+	model.table = &api.TableDetail{
+		Table:     api.TableSummary{HostUsername: "bluff"},
+		CanManage: true,
+		Players:   []api.TablePlayer{{ID: "player-1", Name: "alice"}, {ID: "player-2", Name: "bob"}},
+		Formats:   []api.GameFormat{{ID: "format-1", Name: "rookie", RequiredEntry: 200, Chips: []api.ChipDenomination{{ID: "chip-1", Value: 10}}}},
+	}
+	model.screen, model.loading = recordGameScreen, false
+	model.recordPhase, model.recordFormatIndex, model.playerIndex = recordPlayersPhase, 0, 0
+	model.recordCounts = map[string]map[string]int{}
+	model.recordEntered = map[string]bool{}
+
+	updated, _, handled := model.updateTableKey("enter")
+	if !handled {
+		t.Fatal("enter was not handled")
+	}
+	got := updated.(Model)
+	if got.recordPhase != recordChipCountsPhase || got.recordPlayerIndex != 0 || got.form == nil {
+		t.Fatalf("direct earnings transition = phase %v, player %d, form %v", got.recordPhase, got.recordPlayerIndex, got.form != nil)
+	}
+}
+
+func TestRecordStartsAtFormatAndKeepsMetadataOnRecorder(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+	model.width, model.height = 100, 36
+	model.table = &api.TableDetail{
+		Table:     api.TableSummary{Name: "#saturday", HostUsername: "bluff"},
+		CanManage: true,
+		Formats:   []api.GameFormat{{ID: "format-1", Name: "rookie", RequiredEntry: 200}},
+		Players:   []api.TablePlayer{{ID: "player-1", Name: "alice"}},
+	}
+	model.loading = false
+	model.startRecordGame()
+	if model.recordPhase != recordFormatPhase || model.form != nil {
+		t.Fatalf("record start = phase %v form=%v; want format selection without a form", model.recordPhase, model.form != nil)
+	}
+	if model.recordDetails == nil || model.recordDetails.date != time.Now().Format("2006-01-02") {
+		t.Fatalf("record date = %#v; want today's date", model.recordDetails)
+	}
+	if !strings.Contains(ansi.Strip(model.recordGameView()), "/ record / "+model.recordDetails.date) {
+		t.Fatalf("record header does not include date:\n%s", ansi.Strip(model.recordGameView()))
+	}
+
+	updated, _, handled := model.updateTableKey("t")
+	datePopup := updated.(Model)
+	if !handled || datePopup.recordPopup != recordDatePopup || datePopup.form == nil {
+		t.Fatalf("date popup = handled=%v popup=%v form=%v; want an in-place date editor", handled, datePopup.recordPopup, datePopup.form != nil)
+	}
+	updated, _, handled = datePopup.updateTableKey("esc")
+	closed := updated.(Model)
+	if !handled || closed.screen != recordGameScreen || closed.recordPhase != recordFormatPhase || closed.recordPopup != recordPopupNone {
+		t.Fatalf("date popup close = handled=%v screen=%v phase=%v popup=%v; want recorder format screen", handled, closed.screen, closed.recordPhase, closed.recordPopup)
+	}
+
+	updated, _ = closed.updateTableMouse(tableMouseMsg{action: "note", activate: true})
+	notePopup := updated.(Model)
+	if notePopup.recordPopup != recordNotePopup || notePopup.form == nil {
+		t.Fatalf("note popup = popup=%v form=%v; want an in-place note editor", notePopup.recordPopup, notePopup.form != nil)
+	}
+}
+
+func TestAllInEarningsSkipsDenominations(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+	model.width, model.height = 100, 36
+	model.screen, model.loading = recordGameScreen, false
+	model.recordPhase, model.recordFormatIndex, model.recordPlayerIndex = recordChipCountsPhase, 0, 0
+	model.recordCounts, model.recordEntered = map[string]map[string]int{}, map[string]bool{}
+	model.table = &api.TableDetail{
+		Table:   api.TableSummary{ID: "table-1"},
+		Players: []api.TablePlayer{{ID: "player-1", Name: "alice"}},
+		Formats: []api.GameFormat{{
+			ID:            "format-1",
+			Name:          "rookie",
+			RequiredEntry: 200,
+			Chips:         []api.ChipDenomination{{ID: "chip-1", Label: "white", Color: "white", Value: 10}},
+		}},
+	}
+	model.resetRecordChipForm()
+	model.form.Init()
+	if !strings.Contains(ansi.Strip(model.recordChipCountView()), "white 10") {
+		t.Fatal("normal earnings form does not show denomination counters")
+	}
+
+	model.recordAllIn = true
+	model.rebuildRecordChipForm()
+	model.form.Init()
+	view := ansi.Strip(model.recordChipCountView())
+	if strings.Contains(view, "white 10") || !strings.Contains(view, "All in") {
+		t.Fatalf("all-in form still shows denomination counters or hides its option:\n%s", view)
+	}
+	updated, _ := model.handleTableFormCompleted()
+	got := updated.(Model)
+	if !got.recordEntered["player-1"] || len(got.recordCounts["player-1"]) != 0 {
+		t.Fatalf("all-in save = entered=%v counts=%#v; want an entered player with zero chip counts", got.recordEntered["player-1"], got.recordCounts["player-1"])
 	}
 }
 
@@ -515,6 +689,40 @@ func TestEscapingTablePopupsKeepsTheirSection(t *testing.T) {
 	}
 }
 
+func TestEscapingRecordChipPopupKeepsRecorder(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+	model.width, model.height = 100, 36
+	model.screen, model.loading = recordGameScreen, false
+	model.recordPhase = recordChipCountsPhase
+	model.recordFormatIndex, model.recordPlayerIndex = 0, 0
+	model.recordCounts, model.recordEntered = map[string]map[string]int{}, map[string]bool{}
+	model.table = &api.TableDetail{
+		Table:     api.TableSummary{ID: "table-1"},
+		CanManage: true,
+		Players:   []api.TablePlayer{{ID: "player-1", Name: "alice"}, {ID: "player-2", Name: "bob"}},
+		Formats: []api.GameFormat{{
+			ID:            "format-1",
+			Name:          "rookie 2k",
+			RequiredEntry: 2000,
+			Chips: []api.ChipDenomination{
+				{ID: "chip-1", Label: "white", Color: "white", Value: 200},
+				{ID: "chip-2", Label: "black", Color: "black", Value: 100},
+			},
+		}},
+	}
+	model.resetRecordChipForm()
+
+	updated, _, handled := model.updateTableKey("esc")
+	got := updated.(Model)
+	if !handled || got.screen != recordGameScreen || got.recordPhase != recordPlayersPhase {
+		t.Fatalf("chip popup escape = handled=%v screen=%v phase=%v; want recorder player list", handled, got.screen, got.recordPhase)
+	}
+	if got.form != nil {
+		t.Fatal("chip popup form remains open after escape")
+	}
+}
+
 func TestPlayerDeleteRequiresConfirmation(t *testing.T) {
 	t.Parallel()
 	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
@@ -526,15 +734,73 @@ func TestPlayerDeleteRequiresConfirmation(t *testing.T) {
 	}
 
 	updated, cmd, handled := model.updateTableKey("d")
+	unchanged := updated.(Model)
+	if handled || cmd != nil || unchanged.playerDeleteConfirm {
+		t.Fatalf("plain d = handled=%v cmd=%v confirm=%v; want no delete action", handled, cmd != nil, unchanged.playerDeleteConfirm)
+	}
+
+	updated, cmd, handled = model.updateTableKey("shift+d")
 	first := updated.(Model)
 	if !handled || cmd != nil || !first.playerDeleteConfirm {
 		t.Fatalf("first delete press = handled=%v cmd=%v confirm=%v; want armed confirmation", handled, cmd != nil, first.playerDeleteConfirm)
 	}
 
-	updated, cmd, handled = first.updateTableKey("d")
+	updated, cmd, handled = first.updateTableKey("shift+d")
 	second := updated.(Model)
 	if !handled || cmd == nil || second.playerDeleteConfirm || !second.loading {
 		t.Fatalf("second delete press = handled=%v cmd=%v confirm=%v loading=%v; want delete command", handled, cmd != nil, second.playerDeleteConfirm, second.loading)
+	}
+}
+
+func TestFormatRowsOpenEditPopup(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+	model.width, model.height = 100, 36
+	model.screen, model.loading = formatsScreen, false
+	model.table = &api.TableDetail{
+		Table:     api.TableSummary{ID: "table-1"},
+		CanManage: true,
+		Formats: []api.GameFormat{{
+			ID:            "format-1",
+			Name:          "rookie 2k",
+			RequiredEntry: 2000,
+			Chips:         []api.ChipDenomination{{ID: "chip-1", Label: "white", Color: "white", Value: 200}},
+		}},
+	}
+
+	updated, cmd, handled := model.updateTableKey("enter")
+	got := updated.(Model)
+	if !handled || got.screen != formatCreateScreen {
+		t.Fatalf("format enter = handled=%v cmd=%v screen=%v; want edit popup", handled, cmd != nil, got.screen)
+	}
+	if got.formatEditIndex != 0 || got.form == nil || !strings.Contains(ansi.Strip(got.formatCreateView()), "Edit game format") {
+		t.Fatalf("format edit state = index=%d form=%v view=%q", got.formatEditIndex, got.form != nil, ansi.Strip(got.formatCreateView()))
+	}
+}
+
+func TestFormatListShowsFittingChipDenominations(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+	model.formatIndex = 0
+	model.table = &api.TableDetail{
+		Table: api.TableSummary{ID: "table-1"},
+		Formats: []api.GameFormat{{
+			Name:          "rookie 2k",
+			RequiredEntry: 2000,
+			Chips: []api.ChipDenomination{
+				{Color: "white", Value: 200},
+				{Color: "black", Value: 100},
+				{Color: "green", Value: 50},
+				{Color: "blue", Value: 20},
+			},
+		}},
+	}
+
+	view := ansi.Strip(model.formatList(100))
+	for _, value := range []string{"200", "100", "50", "20"} {
+		if !strings.Contains(view, value) {
+			t.Fatalf("format list omitted fitting chip value %q:\n%s", value, view)
+		}
 	}
 }
 
@@ -568,6 +834,30 @@ func TestVerticalChipCountersMoveAndAdjust(t *testing.T) {
 	}
 }
 
+func TestRecordPlayerListShowsSavedValueAndPL(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+	model.recordFormatIndex = 0
+	model.recordEntered = map[string]bool{"player-1": true}
+	model.recordCounts = map[string]map[string]int{"player-1": {"chip-1": 2}}
+	model.table = &api.TableDetail{
+		Table:   api.TableSummary{HostUsername: "bluff"},
+		Players: []api.TablePlayer{{ID: "player-1", Name: "alice"}, {ID: "player-2", Name: "bob"}},
+		Formats: []api.GameFormat{{
+			RequiredEntry: 200,
+			Chips:         []api.ChipDenomination{{ID: "chip-1", Value: 10}},
+		}},
+	}
+
+	view := ansi.Strip(model.recordPlayerList(100))
+	if !strings.Contains(view, "total 20 cr") || !strings.Contains(view, "P/L -180 cr") {
+		t.Fatalf("recorded player summary missing from list:\n%s", view)
+	}
+	if strings.Contains(view, "saved") {
+		t.Fatalf("recorded player still uses saved marker:\n%s", view)
+	}
+}
+
 func TestTableWorkspaceOverviewUsesChartsAndLocalNavigation(t *testing.T) {
 	t.Parallel()
 	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
@@ -578,6 +868,16 @@ func TestTableWorkspaceOverviewUsesChartsAndLocalNavigation(t *testing.T) {
 		Players: []api.TablePlayer{{Name: "Alice", Standing: 120}, {Name: "Bob", Standing: -40}},
 	}
 	view := ansi.Strip(model.View().Content)
+	statsWidth := 0
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "HOST") {
+			statsWidth = ansi.StringWidth(line)
+			break
+		}
+	}
+	if statsWidth != model.width {
+		t.Fatalf("overview stats width = %d, want full width %d", statsWidth, model.width)
+	}
 	for _, want := range []string{"PLAYERS", "FORMATS", "GAMES", "Player standings", "Chip values"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("overview is missing %q:\n%s", want, view)

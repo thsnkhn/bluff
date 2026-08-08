@@ -4,7 +4,7 @@ import "strings"
 
 func (m Model) isSearchableScreen() bool {
 	switch m.screen {
-	case usersScreen, tablesScreen, tableDetailScreen, formatsScreen, formatDetailScreen, playersScreen, gamesScreen, gameDetailScreen:
+	case usersScreen, tablesScreen, tableDetailScreen, formatsScreen, playersScreen, gamesScreen, gameDetailScreen:
 		return true
 	default:
 		return false

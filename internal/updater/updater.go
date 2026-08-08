@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -352,28 +353,45 @@ func upgradeHomebrew(ctx context.Context) (bool, error) {
 	}
 	command := exec.CommandContext(ctx, "brew", "upgrade", "bluff")
 	command.Stdin = nil
-	command.Stdout = io.Discard
-	command.Stderr = io.Discard
-	if err := command.Run(); err != nil {
-		return false, fmt.Errorf("upgrade Bluff with Homebrew: %w", err)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return false, commandFailure("upgrade Bluff with Homebrew", err, output)
 	}
 	after, err := installedHomebrewVersion(ctx)
 	if err != nil {
 		return false, err
 	}
-	return before != "" && after != "" && before != after, nil
+	if before == "" || after == "" {
+		return false, errors.New("Homebrew did not report the installed Bluff version")
+	}
+	if before == after {
+		return false, fmt.Errorf("Homebrew kept Bluff at %s; the tap may be out of date", after)
+	}
+	return true, nil
 }
 
 func installedHomebrewVersion(ctx context.Context) (string, error) {
-	output, err := exec.CommandContext(ctx, "brew", "list", "--versions", "bluff").Output()
+	output, err := exec.CommandContext(ctx, "brew", "list", "--versions", "bluff").CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("read installed Bluff version from Homebrew: %w", err)
+		return "", commandFailure("read installed Bluff version from Homebrew", err, output)
 	}
 	fields := strings.Fields(string(output))
 	if len(fields) < 2 {
 		return "", nil
 	}
 	return fields[len(fields)-1], nil
+}
+
+func commandFailure(label string, err error, output []byte) error {
+	detail := strings.TrimSpace(string(output))
+	if detail == "" {
+		return fmt.Errorf("%s: %w", label, err)
+	}
+	// Keep startup errors readable even when Homebrew prints a long hint block.
+	if len(detail) > 1024 {
+		detail = detail[:1024] + "..."
+	}
+	return fmt.Errorf("%s: %w: %s", label, err, detail)
 }
 
 func restartCurrentProcess() error {
@@ -386,7 +404,13 @@ func restartCurrentProcess() error {
 			executable = path
 		}
 	}
-	command := exec.Command(executable, os.Args[1:]...)
+	// Bubble Tea restores the terminal after its Run method returns. Start a
+	// tiny supervisor that waits for this process to exit before it execs the
+	// replacement. Starting the new Bubble Tea process immediately races the
+	// parent's raw-mode cleanup and can produce "error entering raw mode".
+	const waitForParentScript = `parent=$1; executable=$2; shift 2; while kill -0 "$parent" 2>/dev/null; do sleep 0.05; done; exec "$executable" "$@"`
+	command := exec.Command("/bin/sh", "-c", waitForParentScript, "bluff-restart", strconv.Itoa(os.Getpid()), executable)
+	command.Args = append(command.Args, os.Args[1:]...)
 	command.Env = os.Environ()
 	command.Stdin = os.Stdin
 	command.Stdout = os.Stdout

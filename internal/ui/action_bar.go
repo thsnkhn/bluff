@@ -56,11 +56,24 @@ func popupActionBar(items []actionBarItem, hoveredAction string) string {
 }
 
 func popupHeader(title string, width int) string {
+	return popupHeaderWithRight(title, "", width)
+}
+
+// popupHeaderWithRight keeps the title on the left and an optional value on
+// the far right, with the same slash rule used by the rest of Bluff's chrome.
+func popupHeaderWithRight(title, right string, width int) string {
 	titleView := brandStyle.Render(title)
+	rightWidth := lipgloss.Width(right)
 	used := lipgloss.Width(titleView) + 1
+	if rightWidth > 0 {
+		used += rightWidth + 1
+	}
 	ruleWidth := max(width-used, 3)
 	rule := lipgloss.NewStyle().Foreground(colorIndigo).Render(strings.Repeat("/", ruleWidth))
-	return titleView + " " + rule
+	if rightWidth == 0 {
+		return titleView + " " + rule
+	}
+	return titleView + " " + rule + " " + right
 }
 
 // popupActionFooter keeps popup actions discoverable without competing with

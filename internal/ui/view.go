@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	bubblesTable "charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 )
@@ -276,25 +277,29 @@ func (m Model) userList(width int) string {
 	if len(m.visibleUserIndices()) == 0 {
 		return mutedStyle.Render("No users match the search.")
 	}
-	usernameWidth := max(width-25, 16)
-	lines := []string{mutedStyle.Render(fmt.Sprintf("%-4s %-*s %s", "", usernameWidth, "USERNAME", "ROLE"))}
+	columns := bluffTableColumns(width, []string{"USERNAME", "ROLE"}, 72, 28)
 	visible := m.visibleUserIndices()
+	rows := make([]bubblesTable.Row, 0, len(visible))
 	for _, index := range visible {
 		user := m.users[index]
 		marker := "  "
-		style := valueStyle
-		if index == m.usersIndex {
+		selected := index == m.usersIndex
+		if selected {
 			marker = "› "
-			style = lipgloss.NewStyle().Bold(true).Foreground(colorFuchsia)
 		}
-		line := fmt.Sprintf("%-4s %-*s", marker, usernameWidth, "@"+truncate(user.Username, usernameWidth-1))
-		if role := userRoleLabel(user.Role); role != "" {
-			line += " " + role
+		usernameWidth := max(columns[0].Width-2, 1)
+		role := ""
+		if label := userRoleLabel(user.Role); label != "" {
+			role = label
 		}
-		lines = append(lines, style.Render(line))
+		rows = append(rows, bluffTableRow(selected,
+			marker+"@"+truncate(user.Username, max(usernameWidth-2, 1)),
+			role,
+		))
 	}
-	lines = append(lines, "", mutedStyle.Render(fmt.Sprintf("%d users", len(visible))))
-	return strings.Join(lines, "\n")
+	table := newBluffTable(columns, rows, width, m.listTableHeight(10, len(rows)))
+	setBluffTableCursor(&table, tableSelectedRow(visible, m.usersIndex, false))
+	return table.View() + "\n\n" + mutedStyle.Render(fmt.Sprintf("%d users", len(visible)))
 }
 
 func usersFooter() string {
@@ -337,21 +342,23 @@ func pinnedTopView(width, height int, content, footer string) string {
 }
 
 func (m Model) helpBar(actions string) string {
-	connection := m.footerIdentity(connectionLine(m.connected, m.checkingConnection, m.spinner.View()))
-	styledActions := mutedStyle.Render(actions)
 	available := max(m.width-2, 1)
+	connecting := m.checkingConnection || (m.screen == bootScreen && m.loading && !m.connected)
+	connection := m.footerIdentity(connectionLine(m.connected, connecting, m.spinner.View()))
+	styledActions := renderBluffHelp(actions, max(available-lipgloss.Width(connection)-3, 1))
 	gap := available - lipgloss.Width(connection) - lipgloss.Width(styledActions)
 	if gap >= 3 {
 		return lipgloss.NewStyle().Width(available).Render(connection + strings.Repeat(" ", gap) + styledActions)
 	}
-	compactConnection := m.footerIdentity(compactConnectionLine(m.connected, m.checkingConnection, m.spinner.View()))
+	compactConnection := m.footerIdentity(compactConnectionLine(m.connected, connecting, m.spinner.View()))
+	styledActions = renderBluffHelp(actions, max(available-lipgloss.Width(compactConnection)-2, 1))
 	gap = available - lipgloss.Width(compactConnection) - lipgloss.Width(styledActions)
 	if gap < 2 {
 		remaining := available - lipgloss.Width(compactConnection) - 2
 		if remaining <= 0 {
 			return compactConnection
 		}
-		return compactConnection + "  " + mutedStyle.Render(truncate(actions, remaining))
+		return compactConnection + "  " + renderBluffHelp(actions, remaining)
 	}
 	return compactConnection + strings.Repeat(" ", gap) + styledActions
 }
@@ -502,7 +509,7 @@ func gradientLogo(logo string) string {
 
 func connectionLine(connected, checking bool, spinnerView string) string {
 	if checking {
-		return spinnerView + " " + mutedStyle.Render("Checking connection")
+		return spinnerView + " " + mutedStyle.Render("Connecting")
 	}
 	if connected {
 		return lipgloss.NewStyle().Foreground(colorGreen).Render("● Connected")
@@ -512,7 +519,7 @@ func connectionLine(connected, checking bool, spinnerView string) string {
 
 func compactConnectionLine(connected, checking bool, spinnerView string) string {
 	if checking {
-		return spinnerView + " " + mutedStyle.Render("Checking")
+		return spinnerView + " " + mutedStyle.Render("Connecting")
 	}
 	if connected {
 		return lipgloss.NewStyle().Foreground(colorGreen).Render("● Connected")
@@ -530,6 +537,18 @@ func sectionHeading(title string, width int) string {
 func (m Model) mouseHandler() func(tea.MouseMsg) tea.Cmd {
 	return func(msg tea.MouseMsg) tea.Cmd {
 		mouse := msg.Mouse()
+		if _, ok := msg.(tea.MouseWheelMsg); ok && m.isTableListScreen() && !m.loading {
+			delta := 0
+			switch mouse.Button {
+			case tea.MouseWheelDown:
+				delta = 3
+			case tea.MouseWheelUp:
+				delta = -3
+			}
+			if delta != 0 {
+				return func() tea.Msg { return tableScrollMsg{delta: delta} }
+			}
+		}
 		activate := false
 		if _, ok := msg.(tea.MouseClickMsg); ok && mouse.Button == tea.MouseLeft {
 			activate = true
@@ -566,7 +585,7 @@ func (m Model) mouseHandler() func(tea.MouseMsg) tea.Cmd {
 					return func() tea.Msg { return dashboardMouseMsg{action: region.value, activate: activate} }
 				}
 			}
-		case tablesScreen, tableDetailScreen, formatsScreen, formatDetailScreen, playersScreen, gamesScreen, gameDetailScreen, recordGameScreen:
+		case tablesScreen, tableDetailScreen, formatsScreen, playersScreen, gamesScreen, gameDetailScreen, recordGameScreen:
 			for _, region := range m.tableHitRegions() {
 				if inRegion(mouse.X, mouse.Y, region) {
 					index := -1

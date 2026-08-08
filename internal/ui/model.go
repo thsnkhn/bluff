@@ -20,6 +20,11 @@ import (
 
 const operationTimeout = 15 * time.Second
 
+// Updates may need to resolve release metadata and download an archive. Keep
+// that work isolated from the normal startup timeout so a slow update cannot
+// make credential restoration look like a keychain failure.
+const updateTimeout = 2 * time.Minute
+
 type screen int
 
 const (
@@ -35,7 +40,6 @@ const (
 	tablesScreen
 	tableDetailScreen
 	formatsScreen
-	formatDetailScreen
 	playersScreen
 	playerDetailScreen
 	gamesScreen
@@ -101,6 +105,17 @@ const (
 	recordReviewPhase
 )
 
+// recordPopupKind identifies the small metadata editors that sit on top of
+// the recorder. Keep this separate from recordPhase so closing a popup never
+// changes the recorder's current step.
+type recordPopupKind int
+
+const (
+	recordPopupNone recordPopupKind = iota
+	recordDatePopup
+	recordNotePopup
+)
+
 type recordDetailsValues struct {
 	date    string
 	remarks string
@@ -143,6 +158,7 @@ type API interface {
 	DeleteTablePlayer(context.Context, string, string, string) error
 	DisableTablePlayer(context.Context, string, string, string) error
 	CreateGameFormat(context.Context, string, string, string, int, []api.ChipDenomination) (api.GameFormat, error)
+	UpdateGameFormat(context.Context, string, string, string, string, int, []api.ChipDenomination) (api.GameFormat, error)
 	PreviewTableGame(context.Context, string, string, string, string, string, []api.GameParticipantInput) (api.TableGame, error)
 	RecordTableGame(context.Context, string, string, string, string, string, []api.GameParticipantInput) (api.TableDetail, error)
 	Logout(context.Context, string) error
@@ -190,6 +206,7 @@ type Model struct {
 	tableIndex          int
 	tableNavIndex       int
 	formatIndex         int
+	formatEditIndex     int
 	playerIndex         int
 	gameIndex           int
 	tablesActionHover   string
@@ -200,11 +217,12 @@ type Model struct {
 	playerForm          *playerFormValues
 	recordDetails       *recordDetailsValues
 	recordPhase         recordPhase
+	recordPopup         recordPopupKind
 	recordFormatIndex   int
 	recordPlayerIndex   int
-	recordSelected      map[string]bool
 	recordCounts        map[string]map[string]int
 	recordEntered       map[string]bool
+	recordAllIn         bool
 	recordChipValues    []string
 	recordPreview       *api.TableGame
 	recordQuickAdd      bool
@@ -232,7 +250,8 @@ func New(client API, store CredentialStore, build BuildInfo, installers ...Updat
 		screen:            bootScreen,
 		spinner:           busy,
 		loading:           true,
-		status:            "Opening the table",
+		status:            "Connecting",
+		formatEditIndex:   -1,
 		playerInviteCodes: make(map[string]string),
 	}
 	if len(installers) > 0 {
@@ -244,7 +263,7 @@ func New(client API, store CredentialStore, build BuildInfo, installers ...Updat
 
 // Init restores any saved session while starting the loading animation.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(tea.RequestBackgroundColor, m.spinner.Tick, m.restoreSessionCmd())
+	return tea.Batch(tea.RequestBackgroundColor, m.spinner.Tick, m.bootHealthCmd())
 }
 
 // Update advances the application in response to terminal and network events.
@@ -428,6 +447,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, nil
+	case tableScrollMsg:
+		if !m.loading && m.isTableListScreen() {
+			m.scrollTableSelection(msg.delta)
+		}
+		return m, nil
 	case dashboardMouseMsg:
 		if m.screen != dashboardScreen || m.loading || !msg.activate {
 			return m, nil
@@ -444,6 +468,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tableMouseMsg:
 		return m.updateTableMouse(msg)
+	case startupHealthMsg:
+		m.connected = msg.err == nil
+		update := m.newerRelease(msg.health.ClientVersion)
+		m.updateAvailable = update
+		if update != nil && m.updater != nil {
+			m.loading, m.status, m.err = true, "Downloading update "+update.Version, nil
+			return m, tea.Batch(m.spinner.Tick, m.bootUpdateCmd(update, msg.err))
+		}
+		m.loading, m.status, m.err = true, "Restoring session", nil
+		return m, tea.Batch(m.spinner.Tick, m.restoreSessionAfterHealthCmd(msg.err, update))
+	case startupUpdateFailedMsg:
+		// Keep the release indicator visible, but let a failed update fall back
+		// to the normal startup path. The update error must not block login.
+		m.loading, m.status, m.err = true, "Restoring session", nil
+		return m, tea.Batch(m.spinner.Tick, m.restoreSessionAfterHealthCmd(msg.connectionErr, msg.update))
 	case sessionRestoredMsg:
 		m.loading = false
 		m.updateAvailable = msg.update
@@ -548,7 +587,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for index, player := range m.table.Players {
 				if player.ID == m.recordQuickAddID {
 					m.playerIndex = index
-					m.recordSelected[player.ID] = true
 					break
 				}
 			}
@@ -592,7 +630,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.loading, m.status, m.err = false, "", nil
 		if m.recordQuickAdd {
-			m.recordSelected[msg.player.ID] = true
 			m.playerIndex = len(m.table.Players) - 1
 			m.recordQuickAdd = false
 			m.screen, m.recordPhase = recordGameScreen, recordPlayersPhase
@@ -653,6 +690,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.table != nil {
 			m.table.Formats = append(m.table.Formats, msg.format)
 		}
+		m.formatEditIndex = -1
+		m.screen = formatsScreen
+		m.form = nil
+		m.loading, m.status, m.err = false, "", nil
+		return m, nil
+	case tableFormatUpdatedMsg:
+		if m.table != nil && msg.index >= 0 && msg.index < len(m.table.Formats) {
+			m.table.Formats[msg.index] = msg.format
+			m.formatIndex = msg.index
+		}
+		m.formatEditIndex = -1
 		m.screen = formatsScreen
 		m.form = nil
 		m.loading, m.status, m.err = false, "", nil
@@ -729,9 +777,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.isTableFormScreen() && !m.loading && m.form != nil {
+		allInBefore := m.recordAllIn
 		updated, cmd := m.form.Update(msg)
 		if form, ok := updated.(*huh.Form); ok {
 			m.form = form
+		}
+		if m.screen == recordGameScreen && m.recordPhase == recordChipCountsPhase && m.recordAllIn != allInBefore {
+			// The all-in choice hides or restores the denomination field. Rebuild
+			// the compact form so the popup follows that choice immediately.
+			m.rebuildRecordChipForm()
+			return m, m.form.Init()
 		}
 		if (m.screen == playerCreateScreen || m.screen == playerDetailScreen) && m.playerForm != nil {
 			m.playerForm.name = strings.ToLower(m.playerForm.name)
@@ -778,8 +833,6 @@ func (m Model) View() tea.View {
 		content = m.tableDetailView()
 	case formatsScreen:
 		content = m.formatsView()
-	case formatDetailScreen:
-		content = m.formatDetailView()
 	case playersScreen:
 		content = m.playersView()
 	case gamesScreen:
@@ -811,12 +864,12 @@ func (m *Model) resetLoginForm() {
 		username = m.login.username
 	}
 	m.login = &loginValues{username: username}
-	m.form = huh.NewForm(huh.NewGroup(
-		newCenteredInput("Username", "", "bluff", &m.login.username, 32, false,
+	m.form = newHuhForm(huh.NewGroup(
+		newHuhInput("Username", "", "bluff", &m.login.username, 32, false,
 			required("enter your username")),
-		newCenteredInput("Password", "", "••••••••", &m.login.password, 128, true,
+		newHuhInput("Password", "", "••••••••", &m.login.password, 128, true,
 			required("enter your password")),
-	)).WithTheme(huh.ThemeFunc(centeredFormTheme)).WithShowHelp(false).WithShowErrors(false)
+	))
 }
 
 func (m *Model) resetInviteCodeForm() {
@@ -825,20 +878,20 @@ func (m *Model) resetInviteCodeForm() {
 		code = m.invite.code
 	}
 	m.invite = &inviteValues{code: code}
-	m.form = huh.NewForm(huh.NewGroup(
-		newCenteredInput("Invite code", "", "A1B2C3", &m.invite.code, 6, false,
+	m.form = newHuhForm(huh.NewGroup(
+		newHuhInput("Invite code", "", "A1B2C3", &m.invite.code, 6, false,
 			inviteCode),
-	)).WithTheme(huh.ThemeFunc(centeredFormTheme)).WithShowHelp(false).WithShowErrors(false)
+	))
 }
 
 func (m *Model) resetInviteAccountForm() {
 	code, username := m.invite.code, m.invite.username
 	m.invite = &inviteValues{code: code, username: username}
-	m.form = huh.NewForm(huh.NewGroup(
-		newCenteredInput("Username", "", "table-friend",
+	m.form = newHuhForm(huh.NewGroup(
+		newHuhInput("Username", "", "table-friend",
 			&m.invite.username, 32, false, required("enter a username")),
-		newCenteredInput("Password", "", "••••••••", &m.invite.password, 128, true, validPassword),
-	)).WithTheme(huh.ThemeFunc(centeredFormTheme)).WithShowHelp(false).WithShowErrors(false)
+		newHuhInput("Password", "", "••••••••", &m.invite.password, 128, true, validPassword),
+	))
 }
 
 func centeredFormTheme(isDark bool) *huh.Styles {
@@ -897,7 +950,10 @@ func popupConfirm(title string, value *bool) *huh.Confirm {
 		Affirmative("Yes").
 		Negative("No").
 		Value(value).
-		WithButtonAlignment(lipgloss.Left)
+		// Keep the choice centered inside the field and remove the empty row
+		// between its title and the buttons.
+		Inline(true).
+		WithButtonAlignment(lipgloss.Center)
 }
 
 func (m *Model) resizeForm() {
@@ -905,6 +961,19 @@ func (m *Model) resizeForm() {
 		return
 	}
 	width := min(max(m.width-16, 32), 54)
+	// The earnings counter is a single custom field. Let Huh keep its natural
+	// height so the popup grows with the number of denominations instead of
+	// inheriting the tall record form viewport.
+	if m.screen == recordGameScreen && m.recordPhase == recordChipCountsPhase {
+		m.form.WithWidth(width)
+		return
+	}
+	// Player editors are rendered inside compact popups. Let Huh use the
+	// group's natural height instead of reserving the full page viewport.
+	if m.screen == playerCreateScreen || m.screen == playerDetailScreen {
+		m.form.WithWidth(width)
+		return
+	}
 	height := 16
 	if m.screen == inviteAccountScreen {
 		height = 18
@@ -962,6 +1031,15 @@ type loginRequiredMsg struct {
 	connected bool
 	update    *api.ClientRelease
 }
+type startupHealthMsg struct {
+	health api.HealthStatus
+	err    error
+}
+type startupUpdateFailedMsg struct {
+	update        *api.ClientRelease
+	connectionErr error
+	err           error
+}
 type connectionCheckedMsg struct{ err error }
 type updateRestartedMsg struct{}
 type loginSucceededMsg sessionRestoredMsg
@@ -972,37 +1050,75 @@ type usersLoadedMsg struct{ users []api.User }
 type invitationCreatedMsg struct{ invitation api.Invitation }
 type loggedOutMsg struct{ err error }
 
-func (m Model) restoreSessionCmd() tea.Cmd {
+func (m Model) bootHealthCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), operationTimeout)
 		defer cancel()
-		health, connectionErr := m.api.HealthStatus(ctx)
+		health, err := m.api.HealthStatus(ctx)
+		return startupHealthMsg{health: health, err: err}
+	}
+}
+
+func (m Model) bootUpdateCmd(update *api.ClientRelease, connectionErr error) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), updateTimeout)
+		defer cancel()
+		if err := m.updater.Install(ctx, *update); err != nil {
+			return startupUpdateFailedMsg{update: update, connectionErr: connectionErr, err: err}
+		}
+		return updateRestartedMsg{}
+	}
+}
+
+func (m Model) restoreSessionAfterHealthCmd(connectionErr error, update *api.ClientRelease) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), operationTimeout)
+		defer cancel()
+		return m.restoreSessionMessage(ctx, connectionErr, update)
+	}
+}
+
+func (m Model) restoreSessionMessage(ctx context.Context, connectionErr error, update *api.ClientRelease) tea.Msg {
+	token, err := m.store.Load(ctx)
+	if errors.Is(err, credentials.ErrNotFound) {
+		return loginRequiredMsg{err: connectionErr, connected: connectionErr == nil, update: update}
+	}
+	if err != nil {
+		return loginRequiredMsg{err: fmt.Errorf("could not open the system keychain: %w", err), connected: connectionErr == nil, update: update}
+	}
+	user, err := m.api.Me(ctx, token)
+	if err != nil {
+		if api.IsUnauthorized(err) {
+			_ = m.store.Delete(ctx)
+			return loginRequiredMsg{err: errors.New("your saved session expired; sign in again"), connected: connectionErr == nil, update: update}
+		}
+		return loginRequiredMsg{err: err, connected: connectionErr == nil, update: update}
+	}
+	bootstrap, err := m.api.Bootstrap(ctx, token)
+	if err != nil {
+		return loginRequiredMsg{err: err, connected: connectionErr == nil, update: update}
+	}
+	return sessionRestoredMsg{token: token, user: user, bootstrap: bootstrap, update: update}
+}
+
+func (m Model) restoreSessionCmd() tea.Cmd {
+	return func() tea.Msg {
+		healthCtx, healthCancel := context.WithTimeout(context.Background(), operationTimeout)
+		health, connectionErr := m.api.HealthStatus(healthCtx)
+		healthCancel()
 		update := m.newerRelease(health.ClientVersion)
 		if update != nil && m.updater != nil {
-			if err := m.updater.Install(ctx, *update); err == nil {
+			updateCtx, updateCancel := context.WithTimeout(context.Background(), updateTimeout)
+			installErr := m.updater.Install(updateCtx, *update)
+			updateCancel()
+			if installErr == nil {
 				return updateRestartedMsg{}
 			}
 		}
-		token, err := m.store.Load(ctx)
-		if errors.Is(err, credentials.ErrNotFound) {
-			return loginRequiredMsg{err: connectionErr, connected: connectionErr == nil, update: update}
-		}
-		if err != nil {
-			return loginRequiredMsg{err: fmt.Errorf("could not open the system keychain: %w", err), connected: connectionErr == nil, update: update}
-		}
-		user, err := m.api.Me(ctx, token)
-		if err != nil {
-			if api.IsUnauthorized(err) {
-				_ = m.store.Delete(ctx)
-				return loginRequiredMsg{err: errors.New("your saved session expired; sign in again"), connected: connectionErr == nil, update: update}
-			}
-			return loginRequiredMsg{err: err, connected: connectionErr == nil, update: update}
-		}
-		bootstrap, err := m.api.Bootstrap(ctx, token)
-		if err != nil {
-			return loginRequiredMsg{err: err, connected: connectionErr == nil, update: update}
-		}
-		return sessionRestoredMsg{token: token, user: user, bootstrap: bootstrap, update: update}
+
+		sessionCtx, sessionCancel := context.WithTimeout(context.Background(), operationTimeout)
+		defer sessionCancel()
+		return m.restoreSessionMessage(sessionCtx, connectionErr, update)
 	}
 }
 
@@ -1028,7 +1144,7 @@ func (m Model) activateHomeItem() (tea.Model, tea.Cmd) {
 		m.resizeForm()
 		return m, m.form.Init()
 	case homeCheckConnection:
-		m.loading, m.checkingConnection, m.status, m.err = true, true, "Checking the connection", nil
+		m.loading, m.checkingConnection, m.status, m.err = true, true, "Connecting", nil
 		return m, tea.Batch(m.spinner.Tick, m.checkConnectionCmd())
 	case homeAbout:
 		m.screen, m.err = aboutScreen, nil

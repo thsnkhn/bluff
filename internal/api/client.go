@@ -204,6 +204,16 @@ func (c *Client) CreateGameFormat(ctx context.Context, token, tableID, name stri
 	return result.Format, err
 }
 
+// UpdateGameFormat changes a table format and replaces its chip denominations.
+func (c *Client) UpdateGameFormat(ctx context.Context, token, tableID, formatID, name string, requiredEntry int, chips []ChipDenomination) (GameFormat, error) {
+	result, err := request[struct {
+		Format GameFormat `json:"format"`
+	}](ctx, c, http.MethodPatch, tablePath(tableID)+"/formats/"+url.PathEscape(formatID), token, map[string]any{
+		"name": name, "requiredEntry": requiredEntry, "chips": chips,
+	})
+	return result.Format, err
+}
+
 // PreviewTableGame asks the server to calculate a completed game's results.
 func (c *Client) PreviewTableGame(ctx context.Context, token, tableID, formatID, date, remarks string, participants []GameParticipantInput) (TableGame, error) {
 	result, err := request[struct {
