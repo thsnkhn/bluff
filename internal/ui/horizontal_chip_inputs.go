@@ -110,7 +110,14 @@ func (row *horizontalChipInputs) View() string {
 			inputWidth := max(cellWidth-3, 3)
 			inputStyle := lipgloss.NewStyle().Width(inputWidth).Foreground(textColor)
 			if row.focused && index == row.active {
-				inputStyle = inputStyle.BorderLeft(true).BorderForeground(colorFuchsia)
+				// Match Huh v2's stock focused field: a thick left edge with one
+				// cell of inner padding. The grid is custom only because Huh does
+				// not provide a repeated four-column field.
+				inputStyle = inputStyle.
+					BorderStyle(lipgloss.ThickBorder()).
+					BorderLeft(true).
+					BorderForeground(colorFuchsia).
+					PaddingLeft(1)
 			}
 			input := inputStyle.Render(truncate(display, inputWidth))
 			cells = append(cells, chipSwatch(row.colors[index])+" "+input)

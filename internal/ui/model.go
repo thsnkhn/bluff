@@ -112,8 +112,7 @@ type recordPopupKind int
 
 const (
 	recordPopupNone recordPopupKind = iota
-	recordDatePopup
-	recordNotePopup
+	recordMetadataPopup
 )
 
 type recordDetailsValues struct {
@@ -161,6 +160,8 @@ type API interface {
 	UpdateGameFormat(context.Context, string, string, string, string, int, []api.ChipDenomination) (api.GameFormat, error)
 	PreviewTableGame(context.Context, string, string, string, string, string, []api.GameParticipantInput) (api.TableGame, error)
 	RecordTableGame(context.Context, string, string, string, string, string, []api.GameParticipantInput) (api.TableDetail, error)
+	PreviewTableGameEdit(context.Context, string, string, string, string, string, string, []api.GameParticipantInput) (api.TableGame, error)
+	UpdateTableGame(context.Context, string, string, string, string, string, string, int, []api.GameParticipantInput) (api.TableDetail, error)
 	Logout(context.Context, string) error
 }
 
@@ -209,6 +210,7 @@ type Model struct {
 	formatEditIndex     int
 	playerIndex         int
 	gameIndex           int
+	resultIndex         int
 	tablesActionHover   string
 	formatActionHover   string
 	playerActionHover   string
@@ -216,15 +218,21 @@ type Model struct {
 	formatForm          *formatFormValues
 	playerForm          *playerFormValues
 	recordDetails       *recordDetailsValues
+	recordMetadataDraft *recordDetailsValues
 	recordPhase         recordPhase
 	recordPopup         recordPopupKind
+	recordBaseline      string
 	recordFormatIndex   int
 	recordPlayerIndex   int
 	recordCounts        map[string]map[string]int
 	recordEntered       map[string]bool
 	recordAllIn         bool
+	recordAllInValue    *bool
+	recordClearConfirm  bool
 	recordChipValues    []string
 	recordPreview       *api.TableGame
+	recordEditGameID    string
+	recordEditVersion   int
 	recordQuickAdd      bool
 	recordQuickAddID    string
 	playerInviteCodes   map[string]string
@@ -706,10 +714,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading, m.status, m.err = false, "", nil
 		return m, nil
 	case tableGamePreviewedMsg:
-		m.loading, m.recordPreview, m.err = false, &msg.game, nil
+		m.loading, m.recordPhase, m.recordPreview, m.err = false, recordReviewPhase, &msg.game, nil
+		m.resultIndex = 0
 		return m, nil
 	case tableGameRecordedMsg:
 		m.loading, m.table, m.recordPreview, m.err, m.notice = false, &msg.table, nil, nil, "Game recorded"
+		m.searchActive, m.searchQuery = false, ""
 		m.screen = tableDetailScreen
 		return m, nil
 	case loggedOutMsg:
@@ -781,6 +791,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		updated, cmd := m.form.Update(msg)
 		if form, ok := updated.(*huh.Form); ok {
 			m.form = form
+		}
+		if m.screen == recordGameScreen && m.recordPhase == recordChipCountsPhase && m.recordAllInValue != nil {
+			// Huh retains a pointer to field values while Bubble Tea copies Model
+			// values between updates. Keep this boolean behind a stable pointer,
+			// then synchronize it before deciding whether to rebuild the form.
+			m.recordAllIn = *m.recordAllInValue
 		}
 		if m.screen == recordGameScreen && m.recordPhase == recordChipCountsPhase && m.recordAllIn != allInBefore {
 			// The all-in choice hides or restores the denomination field. Rebuild
@@ -906,44 +922,6 @@ func centeredFormTheme(isDark bool) *huh.Styles {
 	return styles
 }
 
-func popupFormTheme(isDark bool) *huh.Styles {
-	styles := huh.ThemeCharm(isDark)
-	// Keep a deliberate breathing space between each popup field. Chip rows are
-	// one field, so their four-column layout stays compact within the group.
-	styles.FieldSeparator = lipgloss.NewStyle().SetString("\n\n")
-	// Use Lip Gloss's normal single-line edge for the active field. Huh's
-	// default uses a thick border (┃); the normal edge (│) matches the lighter
-	// rules used throughout Bluff while keeping the focus state clear.
-	styles.Focused.Base = styles.Focused.Base.
-		BorderStyle(lipgloss.NormalBorder()).
-		BorderForeground(colorFuchsia).
-		BorderLeft(true).
-		BorderBottom(false).
-		PaddingLeft(0).
-		Align(lipgloss.Left)
-	styles.Blurred.Base = styles.Blurred.Base.BorderLeft(false).BorderBottom(false).PaddingLeft(0).Align(lipgloss.Left)
-	leftAlignField := func(field *huh.FieldStyles) {
-		field.Title = field.Title.Align(lipgloss.Left)
-		field.Description = field.Description.Align(lipgloss.Left)
-		field.ErrorMessage = field.ErrorMessage.Align(lipgloss.Left)
-		field.Option = field.Option.Align(lipgloss.Left)
-		field.TextInput.Placeholder = field.TextInput.Placeholder.Align(lipgloss.Left)
-		field.TextInput.Text = field.TextInput.Text.Align(lipgloss.Left)
-		field.TextInput.CursorText = field.TextInput.CursorText.Align(lipgloss.Left)
-	}
-	leftAlignField(&styles.Focused)
-	leftAlignField(&styles.Blurred)
-	// Confirm choices use the same left edge as the rest of the popup. Keep
-	// their right breathing room, but do not indent the Yes/No labels.
-	styles.Focused.FocusedButton = styles.Focused.FocusedButton.PaddingLeft(0)
-	styles.Focused.BlurredButton = styles.Focused.BlurredButton.PaddingLeft(0)
-	styles.Blurred.FocusedButton = styles.Blurred.FocusedButton.PaddingLeft(0)
-	styles.Blurred.BlurredButton = styles.Blurred.BlurredButton.PaddingLeft(0)
-	styles.Form.Base = styles.Form.Base.Align(lipgloss.Left)
-	styles.Group.Base = styles.Group.Base.Align(lipgloss.Left)
-	return styles
-}
-
 func popupConfirm(title string, value *bool) *huh.Confirm {
 	return huh.NewConfirm().
 		Title(title).
@@ -956,11 +934,30 @@ func popupConfirm(title string, value *bool) *huh.Confirm {
 		WithButtonAlignment(lipgloss.Center)
 }
 
+func popupStackedConfirm(title string, value *bool) *huh.Confirm {
+	return huh.NewConfirm().
+		// Huh's default stacked confirm inserts a blank row between the title
+		// and buttons. A trailing newline with inline rendering keeps the
+		// options directly below the label.
+		Title(title + "\n").
+		Affirmative("Yes").
+		Negative("No").
+		Value(value).
+		Inline(true)
+}
+
 func (m *Model) resizeForm() {
 	if m.form == nil {
 		return
 	}
 	width := min(max(m.width-16, 32), 54)
+	// Recorder metadata uses compact overlay forms. Giving these forms the
+	// recorder page height makes a one-line date or note field fill almost the
+	// entire terminal.
+	if m.screen == recordGameScreen && m.recordPopup != recordPopupNone {
+		m.form.WithWidth(width)
+		return
+	}
 	// The earnings counter is a single custom field. Let Huh keep its natural
 	// height so the popup grows with the number of denominations instead of
 	// inheriting the tall record form viewport.

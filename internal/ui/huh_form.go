@@ -40,3 +40,32 @@ func newHuhInput(
 	}
 	return input
 }
+
+// newHuhText is the shared stock Huh textarea for longer, multiline content.
+// Enter submits the single-field form; alt+enter or ctrl+j inserts a newline.
+func newHuhText(
+	title string,
+	description string,
+	placeholder string,
+	value *string,
+	lines int,
+	charLimit int,
+	validate func(string) error,
+) *huh.Text {
+	text := huh.NewText().
+		Title(title).
+		Description(description).
+		Placeholder(placeholder).
+		Value(value).
+		ExternalEditor(false)
+	if lines > 0 {
+		text.Lines(lines)
+	}
+	if charLimit > 0 {
+		text.CharLimit(charLimit)
+	}
+	if validate != nil {
+		text.Validate(validate)
+	}
+	return text
+}

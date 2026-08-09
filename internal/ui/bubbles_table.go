@@ -3,7 +3,12 @@ package ui
 import (
 	bubblesTable "charm.land/bubbles/v2/table"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
+
+var bluffTableBaseStyle = lipgloss.NewStyle().
+	BorderStyle(lipgloss.NormalBorder()).
+	BorderForeground(lipgloss.Color("240"))
 
 // newBluffTable keeps Bubbles' table component inside Bluff's existing visual
 // language. The component owns a viewport, so long result lists can scroll
@@ -12,29 +17,40 @@ func newBluffTable(columns []bubblesTable.Column, rows []bubblesTable.Row, width
 	table := bubblesTable.New(
 		bubblesTable.WithColumns(columns),
 		bubblesTable.WithRows(rows),
-		bubblesTable.WithWidth(max(width, 1)),
+		bubblesTable.WithWidth(max(width-2, 1)),
 		bubblesTable.WithHeight(max(height, 2)),
-		bubblesTable.WithFocused(false),
+		bubblesTable.WithFocused(true),
 	)
 	styles := bubblesTable.DefaultStyles()
-	styles.Header = mutedStyle.Padding(0, 1)
-	styles.Cell = lipgloss.NewStyle().Padding(0, 1)
-	styles.Selected = lipgloss.NewStyle().Bold(true).Foreground(colorFuchsia)
+	styles.Header = styles.Header.
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(lipgloss.Color("240")).
+		BorderBottom(true).
+		Bold(false)
+	styles.Selected = styles.Selected.
+		Foreground(lipgloss.Color("229")).
+		Background(lipgloss.Color("57")).
+		Bold(false)
 	table.SetStyles(styles)
 	return table
 }
 
-// bluffTableRow keeps normal rows on the cream value tone while leaving the
-// selected row unstyled so Bubbles can apply the accent style to the full row.
+// bluffTableRow leaves row styling to Bubbles, matching the upstream example.
+
 func bluffTableRow(selected bool, values ...string) bubblesTable.Row {
 	if selected {
-		return bubblesTable.Row(values)
+		// Nested cell colors reset the selected background partway through a
+		// row. The selected treatment owns the complete row, so keep its cell
+		// values plain and let Bubbles apply one uninterrupted highlight.
+		for index := range values {
+			values[index] = ansi.Strip(values[index])
+		}
 	}
-	row := make(bubblesTable.Row, len(values))
-	for index, value := range values {
-		row[index] = valueStyle.Render(value)
-	}
-	return row
+	return bubblesTable.Row(values)
+}
+
+func bluffTableView(table bubblesTable.Model) string {
+	return bluffTableBaseStyle.Render(table.View())
 }
 
 // bluffTableColumns converts the same weighted layout used by the existing
@@ -42,7 +58,10 @@ func bluffTableRow(selected bool, values ...string) bubblesTable.Row {
 // weightedGridColumns, keeping the table flush with the page content edge.
 func bluffTableColumns(width int, titles []string, weights ...int) []bubblesTable.Column {
 	columns := make([]bubblesTable.Column, len(titles))
-	widths := weightedGridColumns(width, weights...)
+	// Bubbles adds one cell of padding on both sides of every column and Bluff
+	// adds the outer border. Reserve both so the final table is exactly width.
+	contentWidth := max(width-2-len(titles)*2, len(titles))
+	widths := weightedGridColumns(contentWidth, weights...)
 	for index, title := range titles {
 		columnWidth := 1
 		if index < len(widths) {
@@ -79,6 +98,16 @@ func setBluffTableCursor(table *bubblesTable.Model, row int) {
 	row = max(0, min(row, len(rows)-1))
 	table.GotoBottom()
 	table.MoveUp(len(rows) - 1 - row)
+
+	// The source selection can be absent after filtering while Bubbles still
+	// keeps a visible cursor. Sanitize the row at the actual cursor so nested
+	// chip, status, or crown colors cannot reset its full-row background.
+	selected := append(bubblesTable.Row(nil), rows[row]...)
+	for index := range selected {
+		selected[index] = ansi.Strip(selected[index])
+	}
+	rows[row] = selected
+	table.SetRows(rows)
 }
 
 // listTableHeight keeps short lists compact while reserving enough room for

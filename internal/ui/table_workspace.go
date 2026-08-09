@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"image/color"
 	"sort"
 	"strings"
 
@@ -90,10 +91,13 @@ func workspaceContentWidth(metrics tableWorkspaceMetrics) int {
 }
 
 func workspaceEmptyState(width int, title, description string) string {
-	return lipgloss.NewStyle().Width(width).Align(lipgloss.Left).Render(
+	content := lipgloss.NewStyle().Width(width).Align(lipgloss.Left).Render(
 		lipgloss.JoinVertical(lipgloss.Left, valueStyle.Render(title), mutedStyle.Render(description)),
 	)
+	return spacedEmptyState(content)
 }
+
+func spacedEmptyState(content string) string { return "\n" + content }
 
 func (m Model) tableWorkspace(active tableSection, items []actionBarItem, content string, footer string) string {
 	width := max(m.width-4, 44)
@@ -119,7 +123,7 @@ func (m Model) tableWorkspace(active tableSection, items []actionBarItem, conten
 	main := lipgloss.NewStyle().Width(mainWidth).Render(content)
 	parts := []string{header, ""}
 	if active != tableOverviewSection {
-		parts = append(parts, actions, "")
+		parts = append(parts, actions)
 	}
 	parts = append(parts, main)
 	if m.err != nil {
@@ -187,6 +191,13 @@ func (m Model) tableOverviewContent(width int) string {
 	stats := m.tableOverviewStats(width)
 	statsBox := lipgloss.NewStyle().Width(width).Padding(0, 1).
 		Border(lipgloss.NormalBorder()).BorderForeground(colorMuted).Render(stats)
+	if len(m.table.Games) == 0 {
+		return lipgloss.JoinVertical(lipgloss.Left,
+			statsBox,
+			"",
+			workspaceEmptyState(width, "Record a game", "Stats will appear here after the first game."),
+		)
+	}
 	return lipgloss.JoinVertical(lipgloss.Left,
 		statsBox,
 		"",
@@ -228,9 +239,9 @@ func workspaceStat(label, value string) string {
 
 func (m Model) tableStandingChart(width int) string {
 	players := sortedTablePlayers(m.table.Players)
-	lines := []string{brandStyle.Render("Player standings")}
+	lines := []string{chartSectionHeading("Player standings", width), ""}
 	if len(players) == 0 || len(m.table.Games) == 0 {
-		return strings.Join(append(lines, "", mutedStyle.Render("Record a game to see date-wise standings.")), "\n")
+		return strings.Join(append(lines, mutedStyle.Render("Record a game to see player standings.")), "\n")
 	}
 
 	games := append([]api.TableGame(nil), m.table.Games...)
@@ -252,64 +263,131 @@ func (m Model) tableStandingChart(width int) string {
 		}
 	}
 
-	nameWidth := min(max(width/5, 10), 18)
-	plotWidth := max(width-nameWidth-2, 16)
-	cellWidth := max((plotWidth-max(len(games)-1, 0))/len(games), 7)
-	dateCells := make([]string, 0, len(games))
-	for _, game := range games {
-		dateCells = append(dateCells, lipgloss.NewStyle().Width(cellWidth).Align(lipgloss.Center).Render(truncate(game.Date, cellWidth)))
+	chartHeight := 13
+	labelWidth := max(len(credits(maximum)), len(credits(-maximum)))
+	plotWidth := max(width-labelWidth-2, 16)
+	grid := make([][]standingChartPoint, chartHeight)
+	for row := range grid {
+		grid[row] = make([]standingChartPoint, plotWidth)
 	}
-	lines = append(lines, strings.Repeat(" ", nameWidth+2)+strings.Join(dateCells, " "))
-	zeroCells := make([]string, 0, len(games))
-	for range games {
-		zeroCells = append(zeroCells, lipgloss.NewStyle().Width(cellWidth).Align(lipgloss.Center).Render("0"))
+	zeroRow := chartHeight / 2
+	for column := 0; column < plotWidth; column++ {
+		grid[zeroRow][column].symbol = '─'
+		grid[zeroRow][column].axis = true
 	}
-	lines = append(lines, mutedStyle.Render(strings.Repeat(" ", nameWidth+2)+strings.Join(zeroCells, " ")))
-	axis := strings.Repeat("─", cellWidth)
-	lines = append(lines, mutedStyle.Render(strings.Repeat(" ", nameWidth+2)+strings.Join(repeatString(axis, len(games)), " ")))
-	for _, player := range players {
-		name := truncate(displayTablePlayerName(player, m.table.Table.HostUsername), max(nameWidth-2, 1))
-		if strings.EqualFold(player.Name, m.table.Table.HostUsername) {
-			name += " " + lipgloss.NewStyle().Foreground(colorFuchsia).Render("♛")
+	palette := standingChartPalette()
+	for playerIndex, player := range players {
+		color := palette[playerIndex%len(palette)]
+		points := make([][2]int, 0, len(games))
+		for gameIndex, value := range values[player.ID] {
+			x := 0
+			if len(games) > 1 {
+				x = gameIndex * (plotWidth - 1) / (len(games) - 1)
+			}
+			y := zeroRow - value*zeroRow/max(maximum, 1)
+			points = append(points, [2]int{x, min(max(y, 0), chartHeight-1)})
 		}
-		nameCell := lipgloss.NewStyle().Width(nameWidth).Render(name)
-		cells := make([]string, 0, len(games))
-		for _, value := range values[player.ID] {
-			cells = append(cells, standingChartCell(value, maximum, cellWidth))
+		for index := 1; index < len(points); index++ {
+			drawStandingChartLine(grid, points[index-1], points[index], color)
 		}
-		lines = append(lines, nameCell+"  "+strings.Join(cells, " "))
+		for _, point := range points {
+			grid[point[1]][point[0]] = standingChartPoint{symbol: '◆', color: color}
+		}
 	}
+	for row := range grid {
+		label := ""
+		switch row {
+		case 0:
+			label = credits(maximum)
+		case zeroRow:
+			label = "0"
+		case chartHeight - 1:
+			label = credits(-maximum)
+		}
+		lines = append(lines, lipgloss.NewStyle().Width(labelWidth).Align(lipgloss.Right).Foreground(colorMuted).Render(label)+"  "+renderStandingChartRow(grid[row]))
+	}
+	dots := make([]rune, plotWidth)
+	for index := range dots {
+		dots[index] = ' '
+	}
+	for gameIndex := range games {
+		x := 0
+		if len(games) > 1 {
+			x = gameIndex * (plotWidth - 1) / (len(games) - 1)
+		}
+		dots[x] = '•'
+	}
+	lines = append(lines, strings.Repeat(" ", labelWidth+2)+mutedStyle.Render(string(dots)))
+	legends := make([]string, 0, len(players))
+	for index, player := range players {
+		color := palette[index%len(palette)]
+		name := displayTablePlayerName(player, m.table.Table.HostUsername)
+		legends = append(legends, lipgloss.NewStyle().Foreground(color).Render("◆ "+name))
+	}
+	lines = append(lines, "", strings.Join(legends, "   "))
 	return strings.Join(lines, "\n")
 }
 
-func repeatString(value string, count int) []string {
-	result := make([]string, count)
-	for index := range result {
-		result[index] = value
-	}
-	return result
+type standingChartPoint struct {
+	symbol rune
+	color  color.Color
+	axis   bool
 }
 
-func standingChartCell(value, maximum, width int) string {
-	canvas := []rune(strings.Repeat(" ", width))
-	axis := width / 2
-	canvas[axis] = '│'
-	bar := abs(value) * max(width-axis-1, 1) / max(maximum, 1)
-	if value > 0 {
-		for index := axis + 1; index <= min(axis+bar, width-1); index++ {
-			canvas[index] = '━'
-		}
-	} else if value < 0 {
-		for index := max(axis-bar, 0); index < axis; index++ {
-			canvas[index] = '━'
-		}
+func standingChartPalette() []color.Color {
+	return []color.Color{
+		colorFuchsia,
+		colorIndigo,
+		colorGreen,
+		lipgloss.Color("#FFB86C"),
+		lipgloss.Color("#FFD866"),
+		lipgloss.Color("#78DCE8"),
 	}
-	return standingStyle(value).Render(string(canvas))
+}
+
+func drawStandingChartLine(grid [][]standingChartPoint, from, to [2]int, color color.Color) {
+	distance := max(abs(to[0]-from[0]), abs(to[1]-from[1]))
+	if distance == 0 {
+		return
+	}
+	for step := 0; step <= distance; step++ {
+		x := from[0] + (to[0]-from[0])*step/distance
+		y := from[1] + (to[1]-from[1])*step/distance
+		symbol := '─'
+		if to[1] < from[1] {
+			symbol = '╱'
+		} else if to[1] > from[1] {
+			symbol = '╲'
+		}
+		grid[y][x] = standingChartPoint{symbol: symbol, color: color}
+	}
+}
+
+func renderStandingChartRow(row []standingChartPoint) string {
+	var line strings.Builder
+	for _, point := range row {
+		if point.symbol == 0 {
+			line.WriteRune(' ')
+			continue
+		}
+		if point.axis {
+			line.WriteString(mutedStyle.Render(string(point.symbol)))
+			continue
+		}
+		line.WriteString(lipgloss.NewStyle().Foreground(point.color).Render(string(point.symbol)))
+	}
+	return line.String()
 }
 
 func (m Model) tableChipChart(width int) string {
-	lines := []string{brandStyle.Render("Chip values")}
-	players := sortedTablePlayers(m.table.Players)
+	lines := []string{chartSectionHeading("Chip values", width), ""}
+	players := append([]api.TablePlayer(nil), m.table.Players...)
+	sort.SliceStable(players, func(i, j int) bool {
+		if players[i].Standing == players[j].Standing {
+			return strings.ToLower(players[i].Name) < strings.ToLower(players[j].Name)
+		}
+		return players[i].Standing > players[j].Standing
+	})
 	if len(players) == 0 {
 		return strings.Join(append(lines, "", mutedStyle.Render("No player values yet.")), "\n")
 	}
@@ -343,15 +421,24 @@ func (m Model) tableChipChart(width int) string {
 				bar[index] = '█'
 			}
 		}
-		barColor := colorIndigo
+		barColor := colorMuted
 		if player.Standing > 0 {
-			barColor = colorFuchsia
+			barColor = colorGreen
+		} else if player.Standing < 0 {
+			barColor = colorRed
 		}
 		barView := lipgloss.NewStyle().Foreground(barColor).Render(string(bar))
 		value := standingStyle(player.Standing).Width(valueWidth).Align(lipgloss.Right).Render(fmt.Sprintf("%d", player.Standing))
 		lines = append(lines, name+barView+value)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func chartSectionHeading(title string, width int) string {
+	prefix := brandStyle.Render("/// " + title)
+	ruleLength := max(width-lipgloss.Width(prefix)-1, 3)
+	rule := lipgloss.NewStyle().Foreground(colorIndigo).Render(strings.Repeat("/", ruleLength))
+	return prefix + " " + rule
 }
 
 func displayTablePlayerName(player api.TablePlayer, hostUsername string) string {

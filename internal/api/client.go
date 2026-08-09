@@ -227,6 +227,21 @@ func (c *Client) RecordTableGame(ctx context.Context, token, tableID, formatID, 
 	return request[TableDetail](ctx, c, http.MethodPost, tablePath(tableID)+"/games", token, tableGameBody(formatID, date, remarks, participants))
 }
 
+// PreviewTableGameEdit recalculates a correction to the latest recorded game.
+func (c *Client) PreviewTableGameEdit(ctx context.Context, token, tableID, gameID, formatID, date, remarks string, participants []GameParticipantInput) (TableGame, error) {
+	result, err := request[struct {
+		Preview TableGame `json:"preview"`
+	}](ctx, c, http.MethodPost, tablePath(tableID)+"/games/"+url.PathEscape(gameID)+"/preview", token, tableGameBody(formatID, date, remarks, participants))
+	return result.Preview, err
+}
+
+// UpdateTableGame saves a new revision of the latest recorded game.
+func (c *Client) UpdateTableGame(ctx context.Context, token, tableID, gameID, formatID, date, remarks string, version int, participants []GameParticipantInput) (TableDetail, error) {
+	body := tableGameBody(formatID, date, remarks, participants)
+	body["version"] = version
+	return request[TableDetail](ctx, c, http.MethodPatch, tablePath(tableID)+"/games/"+url.PathEscape(gameID), token, body)
+}
+
 // Logout revokes the current server session.
 func (c *Client) Logout(ctx context.Context, token string) error {
 	_, err := request[struct {

@@ -6,6 +6,8 @@ func (m Model) isSearchableScreen() bool {
 	switch m.screen {
 	case usersScreen, tablesScreen, tableDetailScreen, formatsScreen, playersScreen, gamesScreen, gameDetailScreen:
 		return true
+	case recordGameScreen:
+		return m.recordPhase == recordPlayersPhase
 	default:
 		return false
 	}
@@ -76,7 +78,7 @@ func (m Model) visibleFormatIndices() []int {
 func (m Model) visiblePlayerIndices() []int {
 	indices := make([]int, 0, len(m.table.Players))
 	for index, player := range m.table.Players {
-		if searchMatches(m.searchQuery, player.Name) {
+		if searchMatches(m.searchQuery, player.Name+" "+player.Username) {
 			indices = append(indices, index)
 		}
 	}

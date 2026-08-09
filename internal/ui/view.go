@@ -197,8 +197,6 @@ func (m Model) appMenuView() string {
 		brandLogo(m.width), "", "",
 		m.identityLine(),
 		"",
-		brandStyle.Render("Choose your next move."),
-		"",
 		lipgloss.JoinVertical(lipgloss.Center, rows...),
 	}
 	if m.err != nil {
@@ -223,12 +221,11 @@ func (m Model) usersView() string {
 		return m.pageView(m.loadingViewBody(), usersFooter())
 	}
 	pageWidth := max(m.width-4, 44)
-	contentWidth := min(pageWidth, 96)
+	contentWidth := pageWidth
 	parts := []string{
 		pageHeader(pageWidth, "users"),
 		"",
 		searchActionBar(usersActionBarItems(), m.usersActionHover, m.searchActive, m.searchQuery),
-		"",
 		m.userList(contentWidth),
 	}
 	if m.notice != "" {
@@ -269,37 +266,33 @@ func userRoleLabel(role string) string {
 
 func (m Model) userList(width int) string {
 	if len(m.users) == 0 {
-		return lipgloss.JoinVertical(lipgloss.Center,
+		return spacedEmptyState(lipgloss.JoinVertical(lipgloss.Center,
 			valueStyle.Render("No users yet"),
 			mutedStyle.Render("Create an invite code to welcome someone."),
-		)
+		))
 	}
 	if len(m.visibleUserIndices()) == 0 {
-		return mutedStyle.Render("No users match the search.")
+		return spacedEmptyState(mutedStyle.Render("No users match the search."))
 	}
 	columns := bluffTableColumns(width, []string{"USERNAME", "ROLE"}, 72, 28)
 	visible := m.visibleUserIndices()
 	rows := make([]bubblesTable.Row, 0, len(visible))
 	for _, index := range visible {
 		user := m.users[index]
-		marker := "  "
 		selected := index == m.usersIndex
-		if selected {
-			marker = "› "
-		}
-		usernameWidth := max(columns[0].Width-2, 1)
+		usernameWidth := max(columns[0].Width, 1)
 		role := ""
 		if label := userRoleLabel(user.Role); label != "" {
 			role = label
 		}
 		rows = append(rows, bluffTableRow(selected,
-			marker+"@"+truncate(user.Username, max(usernameWidth-2, 1)),
+			"@"+truncate(user.Username, max(usernameWidth-1, 1)),
 			role,
 		))
 	}
 	table := newBluffTable(columns, rows, width, m.listTableHeight(10, len(rows)))
 	setBluffTableCursor(&table, tableSelectedRow(visible, m.usersIndex, false))
-	return table.View() + "\n\n" + mutedStyle.Render(fmt.Sprintf("%d users", len(visible)))
+	return bluffTableView(table) + "\n\n" + mutedStyle.Render(fmt.Sprintf("%d users", len(visible)))
 }
 
 func usersFooter() string {
@@ -342,25 +335,61 @@ func pinnedTopView(width, height int, content, footer string) string {
 }
 
 func (m Model) helpBar(actions string) string {
-	available := max(m.width-2, 1)
+	width := max(m.width, 1)
+	connectionStatus := m.footerConnectionStatus()
+	statusBackground := colorRed
+	statusForeground := colorCream
+	if connectionStatus == "connected" {
+		statusBackground = colorGreen
+		statusForeground = lipgloss.Color("#071A14")
+	} else if connectionStatus == "connecting" {
+		statusBackground = lipgloss.Color("#FFD866")
+		statusForeground = lipgloss.Color("#241A00")
+	}
+	statusLabel := lipgloss.NewStyle().Bold(true).Foreground(statusForeground).Background(statusBackground).Render(" " + connectionStatus + " ")
+	statusText := m.footerStatusDetails()
+
+	maxStatusWidth := max(width/3, 12)
+	statusText = truncate(statusText, maxStatusWidth-2)
+	status := ""
+	if statusText != "" {
+		status = lipgloss.NewStyle().Foreground(colorCream).Background(lipgloss.Color("#343436")).Render(" " + statusText + " ")
+	}
+	middleWidth := width - lipgloss.Width(statusLabel) - lipgloss.Width(status)
+	if middleWidth < 4 {
+		return lipgloss.NewStyle().Width(width).Foreground(colorCream).Background(lipgloss.Color("#343436")).Render(truncate(m.footerConnectionStatus(), width))
+	}
+	help := renderBluffHelp(actions, middleWidth)
+	middle := lipgloss.NewStyle().Width(middleWidth).Align(lipgloss.Right).Foreground(colorMuted).Background(lipgloss.Color("#202025")).Render(help)
+	return statusLabel + status + middle
+}
+
+func (m Model) footerConnectionStatus() string {
 	connecting := m.checkingConnection || (m.screen == bootScreen && m.loading && !m.connected)
-	connection := m.footerIdentity(connectionLine(m.connected, connecting, m.spinner.View()))
-	styledActions := renderBluffHelp(actions, max(available-lipgloss.Width(connection)-3, 1))
-	gap := available - lipgloss.Width(connection) - lipgloss.Width(styledActions)
-	if gap >= 3 {
-		return lipgloss.NewStyle().Width(available).Render(connection + strings.Repeat(" ", gap) + styledActions)
+	if connecting {
+		return "connecting"
 	}
-	compactConnection := m.footerIdentity(compactConnectionLine(m.connected, connecting, m.spinner.View()))
-	styledActions = renderBluffHelp(actions, max(available-lipgloss.Width(compactConnection)-2, 1))
-	gap = available - lipgloss.Width(compactConnection) - lipgloss.Width(styledActions)
-	if gap < 2 {
-		remaining := available - lipgloss.Width(compactConnection) - 2
-		if remaining <= 0 {
-			return compactConnection
+	if m.connected {
+		return "connected"
+	}
+	return "offline"
+}
+
+func (m Model) footerStatusDetails() string {
+	status := ""
+	if m.user.Username != "" {
+		status = "@" + m.user.Username
+		if strings.EqualFold(m.user.Role, "admin") {
+			status += " ADMIN"
 		}
-		return compactConnection + "  " + renderBluffHelp(actions, remaining)
 	}
-	return compactConnection + strings.Repeat(" ", gap) + styledActions
+	if m.updateAvailable != nil {
+		if status != "" {
+			status += " · "
+		}
+		status += "↑ " + m.updateAvailable.Version
+	}
+	return status
 }
 
 func (m Model) footerIdentity(connection string) string {
@@ -631,7 +660,6 @@ func (m Model) appMenuHitRegions() []hitRegion {
 	partsBeforeMenu := []string{
 		brandLogo(m.width), "", "",
 		m.identityLine(), "",
-		brandStyle.Render("Choose your next move."), "",
 	}
 	prefixHeight := lipgloss.Height(lipgloss.JoinVertical(lipgloss.Center, partsBeforeMenu...))
 	bodyHeight := prefixHeight + len(items)
@@ -660,7 +688,7 @@ func (m Model) usersHitRegions() []hitRegion {
 	regions := actionBarHitRegions(x, shortcutY, items)
 	listY := shortcutY + shortcutHeight + 1
 	for row, index := range m.visibleUserIndices() {
-		regions = append(regions, hitRegion{x0: x, x1: x + width, y0: listY + 1 + row, y1: listY + 1 + row, value: fmt.Sprintf("user:%d", index)})
+		regions = append(regions, hitRegion{x0: x, x1: x + width, y0: listY + 3 + row, y1: listY + 3 + row, value: fmt.Sprintf("user:%d", index)})
 	}
 	return regions
 }

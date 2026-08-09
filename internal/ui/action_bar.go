@@ -16,6 +16,10 @@ type actionBarItem struct {
 }
 
 func actionBar(items []actionBarItem, hoveredAction string) string {
+	items = visibleActionBarItems(items)
+	if len(items) == 0 {
+		return ""
+	}
 	parts := make([]string, 0, len(items))
 	for _, item := range items {
 		label := item.key + "  " + item.label
@@ -83,6 +87,7 @@ func popupActionFooter(items []actionBarItem, width int) string {
 }
 
 func actionBarHitRegions(x, y int, items []actionBarItem) []hitRegion {
+	items = visibleActionBarItems(items)
 	if len(items) == 0 {
 		return nil
 	}
@@ -110,6 +115,20 @@ func actionBarHitRegions(x, y int, items []actionBarItem) []hitRegion {
 		cursor += width + actionBarGap
 	}
 	return regions
+}
+
+// Back is a global navigation shortcut documented by the bottom help bar.
+// Keeping it out of local action strips prevents the same instruction from
+// competing with screen-specific actions.
+func visibleActionBarItems(items []actionBarItem) []actionBarItem {
+	visible := make([]actionBarItem, 0, len(items))
+	for _, item := range items {
+		if item.action == "back" && item.key == "esc" {
+			continue
+		}
+		visible = append(visible, item)
+	}
+	return visible
 }
 
 func usersActionBarItems() []actionBarItem {
