@@ -85,7 +85,8 @@ func (m *Model) scrollTableSelection(delta int) {
 	case playersScreen:
 		moveVisible(&m.playerIndex, m.visiblePlayerIndices(), delta)
 	case gamesScreen:
-		moveVisible(&m.gameIndex, m.visibleGameIndices(), delta)
+		// Games render newest-first, opposite their source slice order.
+		moveVisible(&m.gameIndex, m.visibleGameIndices(), -delta)
 	}
 }
 
@@ -108,6 +109,23 @@ func (m Model) tableParentScreen() screen {
 }
 
 func (m Model) updateTableKey(key string) (tea.Model, tea.Cmd, bool) {
+	if m.screen == tableDetailScreen && m.expandedChart != tableChartNone {
+		switch key {
+		case "esc", "backspace":
+			m.expandedChart = tableChartNone
+			return m, nil, true
+		case "alt+h":
+			m.expandedChart = tableChartHistory
+			return m, nil, true
+		case "alt+s":
+			m.expandedChart = tableChartStandings
+			return m, nil, true
+		default:
+			// Focus mode owns the overview until it is closed. In particular,
+			// tab must not navigate away while a chart is expanded.
+			return m, nil, true
+		}
+	}
 	if (m.screen == tableDetailScreen || m.screen == formatsScreen || m.screen == playersScreen || m.screen == gamesScreen) && (key == "tab" || key == "shift+tab") {
 		direction := 1
 		if key == "shift+tab" {
@@ -154,6 +172,16 @@ func (m Model) updateTableKey(key string) (tea.Model, tea.Cmd, bool) {
 			return m, nil, true
 		}
 		switch key {
+		case "alt+h":
+			if len(m.table.Games) > 0 {
+				m.expandedChart = tableChartHistory
+			}
+			return m, nil, true
+		case "alt+s":
+			if len(m.table.Games) > 0 {
+				m.expandedChart = tableChartStandings
+			}
+			return m, nil, true
 		case "r":
 			m.loading, m.status, m.err = true, "Refreshing table", nil
 			return m, tea.Batch(m.spinner.Tick, m.tableCmd(m.table.Table.ID)), true
@@ -163,7 +191,7 @@ func (m Model) updateTableKey(key string) (tea.Model, tea.Cmd, bool) {
 				return m, nil, true
 			}
 		case "esc", "backspace":
-			m.screen, m.err = tablesScreen, nil
+			m.screen, m.err, m.expandedChart = tablesScreen, nil, tableChartNone
 			return m, nil, true
 		}
 	case formatsScreen:
@@ -194,10 +222,10 @@ func (m Model) updateTableKey(key string) (tea.Model, tea.Cmd, bool) {
 	case gamesScreen:
 		switch key {
 		case "up", "k":
-			moveVisible(&m.gameIndex, m.visibleGameIndices(), -1)
+			moveVisible(&m.gameIndex, m.visibleGameIndices(), 1)
 			return m, nil, true
 		case "down", "j":
-			moveVisible(&m.gameIndex, m.visibleGameIndices(), 1)
+			moveVisible(&m.gameIndex, m.visibleGameIndices(), -1)
 			return m, nil, true
 		case "enter", " ":
 			if len(m.visibleGameIndices()) > 0 {
@@ -430,6 +458,7 @@ func (m Model) cycleTableSection(direction int) (tea.Model, tea.Cmd) {
 
 func (m Model) navigateTableSection(section tableSection) (tea.Model, tea.Cmd) {
 	m.tableNavIndex = int(section)
+	m.expandedChart = tableChartNone
 	switch section {
 	case tablePlayersSection:
 		m.screen, m.playerIndex, m.err = playersScreen, 0, nil
@@ -1117,7 +1146,11 @@ func (m Model) tableDetailView() string {
 	if m.notice != "" {
 		content = lipgloss.JoinVertical(lipgloss.Left, content, "", lipgloss.NewStyle().Foreground(colorGreen).Render("✓ "+m.notice))
 	}
-	return m.tableWorkspace(tableOverviewSection, items, content, tableDetailFooter())
+	footer := tableDetailFooter()
+	if m.expandedChart != tableChartNone {
+		footer = "esc back"
+	}
+	return m.tableWorkspace(tableOverviewSection, items, content, footer)
 }
 
 func tableDetailFooter() string {
@@ -1384,7 +1417,7 @@ func recordChipCountLine(chips []api.ChipDenomination, counts map[string]int) st
 	values := make([]string, 0, len(chips))
 	for _, chip := range chips {
 		if count := counts[chip.ID]; count > 0 {
-			values = append(values, fmt.Sprintf("%s %d × %d", chipSwatch(chip.Color), chip.Value, count))
+			values = append(values, fmt.Sprintf("%s × %d", chipSwatch(chip.Color), count))
 		}
 	}
 	return strings.Join(values, "  ")
@@ -1394,7 +1427,7 @@ func participantChipCountLine(chips []api.ChipCount) string {
 	values := make([]string, 0, len(chips))
 	for _, chip := range chips {
 		if chip.Count > 0 {
-			values = append(values, fmt.Sprintf("%s %d × %d", chipSwatch(chip.Color), chip.Value, chip.Count))
+			values = append(values, fmt.Sprintf("%s × %d", chipSwatch(chip.Color), chip.Count))
 		}
 	}
 	return strings.Join(values, "  ")

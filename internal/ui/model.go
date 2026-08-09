@@ -206,6 +206,7 @@ type Model struct {
 	table               *api.TableDetail
 	tableIndex          int
 	tableNavIndex       int
+	expandedChart       tableChartFocus
 	formatIndex         int
 	formatEditIndex     int
 	playerIndex         int
@@ -594,6 +595,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.screen = tableDetailScreen
 		}
 		m.tableNavIndex = int(tableOverviewSection)
+		m.expandedChart = tableChartNone
 		m.loading, m.table, m.err, m.notice = false, &msg.table, nil, m.pendingTableNotice
 		m.pendingTableNotice = ""
 		if m.recordQuickAdd && m.recordQuickAddID != "" {
@@ -956,6 +958,17 @@ func (m *Model) resizeForm() {
 		return
 	}
 	width := min(max(m.width-16, 32), 54)
+	// Authentication forms sit inside compact bordered groups. Keep their
+	// natural height so the boundary follows the fields instead of creating a
+	// large empty panel.
+	if m.screen == loginScreen || m.screen == inviteCodeScreen || m.screen == inviteAccountScreen {
+		authWidth := min(max(m.width-16, 24), 40)
+		if m.screen == inviteCodeScreen {
+			authWidth = min(authWidth, 28)
+		}
+		m.form.WithWidth(authWidth)
+		return
+	}
 	// Recorder metadata uses compact overlay forms. Giving these forms the
 	// recorder page height makes a one-line date or note field fill almost the
 	// entire terminal.
@@ -977,9 +990,6 @@ func (m *Model) resizeForm() {
 		return
 	}
 	height := 16
-	if m.screen == inviteAccountScreen {
-		height = 18
-	}
 	if m.screen == formatCreateScreen {
 		height = 14
 	}

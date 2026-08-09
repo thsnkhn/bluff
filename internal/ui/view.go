@@ -122,7 +122,7 @@ func (m Model) loginView() string {
 	if m.err != nil {
 		parts = append(parts, errorStyle.Render("! "+friendlyError(m.err)), "")
 	}
-	parts = append(parts, m.form.View())
+	parts = append(parts, authFieldGroup(m.form.View()))
 	body := lipgloss.JoinVertical(lipgloss.Center, parts...)
 	return m.screenView(body, "tab next   enter continue")
 }
@@ -135,7 +135,7 @@ func (m Model) inviteCodeView() string {
 	if m.err != nil {
 		parts = append(parts, errorStyle.Render("! "+friendlyError(m.err)), "")
 	}
-	parts = append(parts, m.form.View())
+	parts = append(parts, authFieldGroup(m.form.View()))
 	body := lipgloss.JoinVertical(lipgloss.Center, parts...)
 	return m.screenView(body, "enter continue")
 }
@@ -153,9 +153,19 @@ func (m Model) inviteAccountView() string {
 	if m.err != nil {
 		parts = append(parts, errorStyle.Render("! "+friendlyError(m.err)), "")
 	}
-	parts = append(parts, m.form.View())
+	parts = append(parts, authFieldGroup(m.form.View()))
 	body := lipgloss.JoinVertical(lipgloss.Center, parts...)
 	return m.screenView(body, "tab next   enter create account")
+}
+
+// authFieldGroup gives the centered authentication forms one clear boundary
+// while leaving Huh responsible for field focus, input, and validation.
+func authFieldGroup(content string) string {
+	return lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(colorMuted).
+		Padding(1, 2).
+		Render(content)
 }
 
 func (m Model) aboutView() string {
@@ -337,30 +347,27 @@ func pinnedTopView(width, height int, content, footer string) string {
 func (m Model) helpBar(actions string) string {
 	width := max(m.width, 1)
 	connectionStatus := m.footerConnectionStatus()
-	statusBackground := colorRed
-	statusForeground := colorCream
+	statusForeground := colorRed
 	if connectionStatus == "connected" {
-		statusBackground = colorGreen
-		statusForeground = lipgloss.Color("#071A14")
+		statusForeground = colorGreen
 	} else if connectionStatus == "connecting" {
-		statusBackground = lipgloss.Color("#FFD866")
-		statusForeground = lipgloss.Color("#241A00")
+		statusForeground = lipgloss.Color("#FFD866")
 	}
-	statusLabel := lipgloss.NewStyle().Bold(true).Foreground(statusForeground).Background(statusBackground).Render(" " + connectionStatus + " ")
+	statusLabel := lipgloss.NewStyle().Bold(true).Foreground(statusForeground).Render(connectionStatus)
 	statusText := m.footerStatusDetails()
 
 	maxStatusWidth := max(width/3, 12)
 	statusText = truncate(statusText, maxStatusWidth-2)
 	status := ""
 	if statusText != "" {
-		status = lipgloss.NewStyle().Foreground(colorCream).Background(lipgloss.Color("#343436")).Render(" " + statusText + " ")
+		status = lipgloss.NewStyle().Foreground(colorCream).Render("  " + statusText)
 	}
 	middleWidth := width - lipgloss.Width(statusLabel) - lipgloss.Width(status)
 	if middleWidth < 4 {
-		return lipgloss.NewStyle().Width(width).Foreground(colorCream).Background(lipgloss.Color("#343436")).Render(truncate(m.footerConnectionStatus(), width))
+		return lipgloss.NewStyle().Width(width).Foreground(statusForeground).Render(truncate(m.footerConnectionStatus(), width))
 	}
 	help := renderBluffHelp(actions, middleWidth)
-	middle := lipgloss.NewStyle().Width(middleWidth).Align(lipgloss.Right).Foreground(colorMuted).Background(lipgloss.Color("#202025")).Render(help)
+	middle := lipgloss.NewStyle().Width(middleWidth).Align(lipgloss.Right).Foreground(colorMuted).Render(help)
 	return statusLabel + status + middle
 }
 

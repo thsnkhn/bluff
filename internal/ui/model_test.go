@@ -632,10 +632,10 @@ func TestGameInspectionMatchesReviewAndOnlyLatestGameIsEditable(t *testing.T) {
 	model.gameIndex = 1
 	latest := ansi.Strip(model.gameDetailView())
 	if !strings.Contains(latest, "Inspecting") || !strings.Contains(latest, "e  Edit") ||
-		strings.Index(latest, "winner") > strings.Index(latest, "loser") || !strings.Contains(latest, "10 × 15") {
+		strings.Index(latest, "winner") > strings.Index(latest, "loser") || !strings.Contains(latest, "× 15") {
 		t.Fatalf("latest game inspection is not review-style or P/L sorted:\n%s", latest)
 	}
-	if !lineContainsAll(latest, "Total 150 cr", "P/L +50 cr", "10 × 15") {
+	if !lineContainsAll(latest, "Total 150 cr", "P/L +50 cr", "× 15") || strings.Contains(latest, "10 ×") {
 		t.Fatalf("inspection totals, P/L, and denominations are not on the same line:\n%s", latest)
 	}
 	moved, _, handled := model.updateTableKey("down")
@@ -1217,10 +1217,10 @@ func TestGamePreviewEntersLockedReviewWithRecordedPlayersOnly(t *testing.T) {
 			t.Fatalf("review list missing %q:\n%s", want, view)
 		}
 	}
-	if !strings.Contains(view, "100 × 2") {
+	if !strings.Contains(view, "× 2") {
 		t.Fatalf("review list does not show the recorded denomination:\n%s", view)
 	}
-	if !lineContainsAll(view, "Total 200 cr", "P/L 0 cr", "100 × 2") {
+	if !lineContainsAll(view, "Total 200 cr", "P/L 0 cr", "× 2") || strings.Contains(view, "100 ×") {
 		t.Fatalf("review totals, P/L, and denominations are not on the same line:\n%s", view)
 	}
 	if strings.Contains(view, "carol") || strings.Contains(view, "Add earnings") {
@@ -1310,10 +1310,13 @@ func TestTableWorkspaceOverviewUsesChartsAndLocalNavigation(t *testing.T) {
 	if statsWidth != model.width {
 		t.Fatalf("overview stats width = %d, want full width %d", statsWidth, model.width)
 	}
-	for _, want := range []string{"PLAYERS", "FORMATS", "GAMES", "Player standings", "Chip values"} {
+	for _, want := range []string{"PLAYERS", "FORMATS", "GAMES", "History", "Standings"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("overview is missing %q:\n%s", want, view)
 		}
+	}
+	if strings.Index(view, "Standings") > strings.Index(view, "History") {
+		t.Fatalf("standings should appear before history:\n%s", view)
 	}
 	if strings.Contains(view, "Recent activity") {
 		t.Fatal("overview still contains recent activity")
@@ -1338,8 +1341,121 @@ func TestTableWorkspaceOverviewShowsOneEmptyStateBeforeFirstGame(t *testing.T) {
 	if !strings.Contains(view, "Record a game") || !strings.Contains(view, "Stats will appear here") {
 		t.Fatalf("overview empty state is missing:\n%s", view)
 	}
-	if strings.Contains(view, "Player standings") || strings.Contains(view, "Chip values") {
+	if strings.Contains(view, "History") || strings.Contains(view, "Standings") {
 		t.Fatalf("overview renders charts before the first game:\n%s", view)
+	}
+}
+
+func TestOverviewChartExpansionShortcuts(t *testing.T) {
+	t.Parallel()
+	base := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+	base.width, base.height = 120, 40
+	base.screen, base.loading = tableDetailScreen, false
+	base.table = &api.TableDetail{
+		Table: api.TableSummary{Name: "#saturday", HostUsername: "bluff"},
+		Players: []api.TablePlayer{
+			{ID: "p1", Name: "bluff", Standing: 100},
+			{ID: "p2", Name: "alice", Standing: -100},
+		},
+		Games: []api.TableGame{{Date: "2026-08-09", Participants: []api.TableGameParticipant{
+			{PlayerID: "p1", EndingStanding: 100},
+			{PlayerID: "p2", EndingStanding: -100},
+		}}},
+	}
+
+	normal := ansi.Strip(base.View().Content)
+	for _, shortcut := range []string{"alt+h expand", "alt+s expand"} {
+		if !strings.Contains(normal, shortcut) {
+			t.Fatalf("overview is missing %q:\n%s", shortcut, normal)
+		}
+	}
+
+	tests := []struct {
+		name       string
+		key        string
+		focus      tableChartFocus
+		visible    string
+		notVisible string
+	}{
+		{name: "history", key: "alt+h", focus: tableChartHistory, visible: "History", notVisible: "Standings"},
+		{name: "standings", key: "alt+s", focus: tableChartStandings, visible: "Standings", notVisible: "History"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			updated, _, handled := base.updateTableKey(test.key)
+			if !handled {
+				t.Fatalf("%s was not handled", test.key)
+			}
+			expanded := updated.(Model)
+			if expanded.expandedChart != test.focus {
+				t.Fatalf("expanded chart = %d, want %d", expanded.expandedChart, test.focus)
+			}
+			view := ansi.Strip(expanded.View().Content)
+			if !strings.Contains(view, test.visible) || !strings.Contains(view, "esc back") {
+				t.Fatalf("expanded chart is incomplete:\n%s", view)
+			}
+			if strings.Contains(view, test.notVisible) || strings.Contains(view, "HOST") {
+				t.Fatalf("expanded chart still renders overview content:\n%s", view)
+			}
+
+			closed, _, handled := expanded.updateTableKey("esc")
+			if !handled || closed.(Model).expandedChart != tableChartNone || closed.(Model).screen != tableDetailScreen {
+				t.Fatalf("escape did not return to the table overview")
+			}
+		})
+	}
+}
+
+func TestTableOverviewStatsExcludeBalancedTableValue(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+	model.table = &api.TableDetail{
+		Table:   api.TableSummary{HostUsername: "bluff"},
+		Players: []api.TablePlayer{{Standing: 100}, {Standing: -100}},
+		Games:   []api.TableGame{{}},
+	}
+
+	view := ansi.Strip(model.tableOverviewStats(120))
+	for _, want := range []string{"HOST", "PLAYERS", "GAMES"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("overview stats are missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "TABLE VALUE") {
+		t.Fatalf("overview still shows the balanced table value:\n%s", view)
+	}
+}
+
+func TestExpandedChipChartAddsRowsBetweenPlayers(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+	model.table = &api.TableDetail{
+		Table: api.TableSummary{HostUsername: "bluff"},
+		Players: []api.TablePlayer{
+			{ID: "p1", Name: "alice", Standing: 100},
+			{ID: "p2", Name: "bob", Standing: -100},
+		},
+	}
+
+	compact := ansi.Strip(model.tableChipChartWithShortcut(100, "alt+s expand"))
+	model.expandedChart = tableChartStandings
+	expanded := ansi.Strip(model.tableChipChartWithShortcut(100, "esc back"))
+	if strings.Count(expanded, "\n\n") != strings.Count(compact, "\n\n")+1 {
+		t.Fatalf("expanded chip chart did not add one row between players:\n%s", expanded)
+	}
+}
+
+func TestExpandedStandingChartUsesRemainingTerminalHeight(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+	model.height = 60
+	if got, want := model.expandedStandingChartHeight(), 51; got != want {
+		t.Fatalf("expanded chart height = %d, want %d", got, want)
+	}
+
+	model.height = 12
+	if got, want := model.expandedStandingChartHeight(), 8; got != want {
+		t.Fatalf("small-terminal chart height = %d, want %d", got, want)
 	}
 }
 
@@ -1363,8 +1479,32 @@ func TestTableChipChartSortsHighestValueFirst(t *testing.T) {
 		t.Fatalf("chip chart is not sorted by value descending:\n%s", view)
 	}
 	lines := strings.Split(view, "\n")
-	if !strings.HasPrefix(lines[0], "/// Chip values ") || strings.TrimSpace(lines[1]) != "" {
+	if !strings.HasPrefix(lines[0], "/// Standings ") || strings.TrimSpace(lines[1]) != "" {
 		t.Fatalf("chip chart heading is not followed by one blank row:\n%s", view)
+	}
+}
+
+func TestStandingsChartShowsLifetimeLedgerColumns(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+	model.table = &api.TableDetail{
+		Table:   api.TableSummary{HostUsername: "alice"},
+		Players: []api.TablePlayer{{ID: "p1", Name: "alice", Standing: 500}},
+		Games: []api.TableGame{
+			{Participants: []api.TableGameParticipant{{PlayerID: "p1", RequiredEntry: 2000, FinalValue: 2500}}},
+			{Participants: []api.TableGameParticipant{{PlayerID: "p1", RequiredEntry: 2000, FinalValue: 2000}}},
+		},
+	}
+
+	summary := model.tablePlayerLedgerSummaries()["p1"]
+	if summary.withdrawn != 4500 || summary.buyIn != 4000 || summary.games != 2 {
+		t.Fatalf("ledger summary = %#v, want withdrawn 4500, buy-in 4000, games 2", summary)
+	}
+	view := ansi.Strip(model.tableChipChart(120))
+	for _, want := range []string{"BALANCE", "WITHDRAWN", "BUY-IN", "GAMES", "4500 cr", "4000 cr"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("standings chart is missing %q:\n%s", want, view)
+		}
 	}
 }
 
@@ -1384,7 +1524,7 @@ func TestTableStandingChartPlotsGamesWithPlayerLegend(t *testing.T) {
 	}
 
 	view := ansi.Strip(model.tableStandingChart(100))
-	for _, want := range []string{"Player standings", "100 cr", "-100 cr", "0", "◆ @alice", "◆ bob", "•"} {
+	for _, want := range []string{"History", "100 cr", "-100 cr", "0", "◆ @alice", "◆ bob", "•"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("standing chart missing %q:\n%s", want, view)
 		}
@@ -1396,7 +1536,7 @@ func TestTableStandingChartPlotsGamesWithPlayerLegend(t *testing.T) {
 		t.Fatalf("standing chart still exposes dates:\n%s", view)
 	}
 	lines := strings.Split(view, "\n")
-	if !strings.HasPrefix(lines[0], "/// Player standings ") || strings.TrimSpace(lines[1]) != "" {
+	if !strings.HasPrefix(lines[0], "/// History ") || strings.TrimSpace(lines[1]) != "" {
 		t.Fatalf("standing chart heading is not followed by one blank row:\n%s", view)
 	}
 }
@@ -1486,6 +1626,44 @@ func TestTableGameMouseRegionsSelectHistoryRows(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("game history did not expose mouse hit regions")
+	}
+}
+
+func TestGameHistoryMovementFollowsNewestFirstRows(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+	model.screen, model.loading = gamesScreen, false
+	model.table = &api.TableDetail{Games: []api.TableGame{
+		{ID: "oldest"}, {ID: "middle"}, {ID: "newest"},
+	}}
+
+	tests := []struct {
+		name  string
+		start int
+		key   string
+		want  int
+	}{
+		{name: "down selects the next older game", start: 2, key: "down", want: 1},
+		{name: "up selects the next newer game", start: 1, key: "up", want: 2},
+		{name: "j selects the next older game", start: 1, key: "j", want: 0},
+		{name: "k selects the next newer game", start: 1, key: "k", want: 2},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			current := model
+			current.gameIndex = test.start
+			updated, _, handled := current.updateTableKey(test.key)
+			got := updated.(Model)
+			if !handled || got.gameIndex != test.want {
+				t.Fatalf("handled=%v game index=%d, want %d", handled, got.gameIndex, test.want)
+			}
+		})
+	}
+
+	model.gameIndex = 2
+	updated, _ := model.Update(tableScrollMsg{delta: 3})
+	if got := updated.(Model).gameIndex; got != 0 {
+		t.Fatalf("game index after scrolling down = %d, want 0", got)
 	}
 }
 
