@@ -46,7 +46,13 @@ func main() {
 	store := credentials.NewKeyringStore(baseURL)
 	model := ui.New(client, store, ui.BuildInfo{Version: version}, updater.New())
 	program := tea.NewProgram(model, tea.WithContext(context.Background()))
-	if _, err := program.Run(); err != nil {
+	finalModel, err := program.Run()
+	if err != nil {
 		log.Fatalf("run bluff: %v", err)
+	}
+	if model, ok := finalModel.(ui.Model); ok && model.RestartRequested() {
+		if err := updater.Relaunch(); err != nil {
+			log.Fatalf("restart bluff: %v", err)
+		}
 	}
 }

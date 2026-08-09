@@ -165,8 +165,8 @@ type API interface {
 	Logout(context.Context, string) error
 }
 
-// UpdateInstaller installs a verified release and starts the replacement
-// process. Keeping it behind an interface makes the boot flow cheap to test.
+// UpdateInstaller installs a verified release. The executable is relaunched
+// only after Bubble Tea has restored the terminal.
 type UpdateInstaller interface {
 	Install(context.Context, api.ClientRelease) error
 }
@@ -245,7 +245,11 @@ type Model struct {
 	connected           bool
 	checkingConnection  bool
 	updateAvailable     *api.ClientRelease
+	restartRequested    bool
 }
+
+// RestartRequested reports whether Program.Run ended to start an installed update.
+func (m Model) RestartRequested() bool { return m.restartRequested }
 
 // New constructs the Bluff terminal application.
 func New(client API, store CredentialStore, build BuildInfo, installers ...UpdateInstaller) Model {
@@ -524,6 +528,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case updateRestartedMsg:
+		m.restartRequested = true
 		return m, tea.Quit
 	case invitationValidatedMsg:
 		m.loading, m.screen, m.err = false, inviteAccountScreen, nil

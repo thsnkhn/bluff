@@ -17,7 +17,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
@@ -71,7 +70,7 @@ func (installer *Installer) Install(ctx context.Context, release api.ClientRelea
 		if !upgraded {
 			return errors.New("Homebrew did not install a newer Bluff release")
 		}
-		return restartCurrentProcess()
+		return nil
 	}
 	if runtime.GOOS == "windows" {
 		// TODO: add a small Windows replacement helper; a running .exe cannot be renamed safely.
@@ -97,7 +96,7 @@ func (installer *Installer) Install(ctx context.Context, release api.ClientRelea
 	if err := replaceExecutable(executable, binaryPath); err != nil {
 		return err
 	}
-	return restartCurrentProcess()
+	return nil
 }
 
 func (installer *Installer) resolveRelease(ctx context.Context, version string) (api.ClientRelease, error) {
@@ -394,29 +393,15 @@ func commandFailure(label string, err error, output []byte) error {
 	return fmt.Errorf("%s: %w: %s", label, err, detail)
 }
 
-func restartCurrentProcess() error {
+func updatedExecutable() (string, error) {
 	executable, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("find updated Bluff executable: %w", err)
+		return "", fmt.Errorf("find updated Bluff executable: %w", err)
 	}
 	if isHomebrewManaged(executable) {
 		if path, err := exec.LookPath("bluff"); err == nil {
 			executable = path
 		}
 	}
-	// Bubble Tea restores the terminal after its Run method returns. Start a
-	// tiny supervisor that waits for this process to exit before it execs the
-	// replacement. Starting the new Bubble Tea process immediately races the
-	// parent's raw-mode cleanup and can produce "error entering raw mode".
-	const waitForParentScript = `parent=$1; executable=$2; shift 2; while kill -0 "$parent" 2>/dev/null; do sleep 0.05; done; exec "$executable" "$@"`
-	command := exec.Command("/bin/sh", "-c", waitForParentScript, "bluff-restart", strconv.Itoa(os.Getpid()), executable)
-	command.Args = append(command.Args, os.Args[1:]...)
-	command.Env = os.Environ()
-	command.Stdin = os.Stdin
-	command.Stdout = os.Stdout
-	command.Stderr = os.Stderr
-	if err := command.Start(); err != nil {
-		return fmt.Errorf("restart Bluff: %w", err)
-	}
-	return nil
+	return executable, nil
 }
