@@ -328,7 +328,7 @@ func (m Model) tableStandingChartSized(width, chartHeight int, shortcut string) 
 	legends := make([]string, 0, len(players))
 	for index, player := range players {
 		color := palette[index%len(palette)]
-		name := displayTablePlayerName(player, m.table.Table.HostUsername)
+		name := displayTablePlayerName(player)
 		legends = append(legends, lipgloss.NewStyle().Foreground(color).Render("◆ "+name))
 	}
 	lines = append(lines, "", strings.Join(legends, "   "))
@@ -450,8 +450,8 @@ func (m Model) tableChipChartWithShortcut(width int, shortcut string) string {
 	axis := plotWidth / 2
 	leftWidth, rightWidth := axis, plotWidth-axis-1
 	for playerIndex, player := range players {
-		name := truncate(displayTablePlayerName(player, m.table.Table.HostUsername), nameWidth-2)
-		if strings.EqualFold(player.Name, m.table.Table.HostUsername) {
+		name := truncate(displayTablePlayerName(player), nameWidth-2)
+		if tablePlayerIsHost(player, m.table.Table) {
 			name += " " + lipgloss.NewStyle().Foreground(colorFuchsia).Render("♛")
 		}
 		name = lipgloss.NewStyle().Width(nameWidth).Render(name)
@@ -589,21 +589,27 @@ func (m Model) expandedStandingChartHeight() int {
 	return max(m.height-9, 8)
 }
 
-func displayTablePlayerName(player api.TablePlayer, hostUsername string) string {
+func displayTablePlayerName(player api.TablePlayer) string {
 	username := strings.TrimPrefix(strings.TrimSpace(player.Username), "@")
-	if username == "" && strings.EqualFold(player.Name, hostUsername) {
-		username = strings.TrimPrefix(strings.TrimSpace(player.Name), "@")
-	}
 	if username != "" {
 		return "@" + username
 	}
 	return player.Name
 }
 
-func displayParticipantName(name, hostUsername string) string {
-	name = strings.TrimSpace(name)
-	if name != "" && strings.EqualFold(strings.TrimPrefix(name, "@"), strings.TrimPrefix(hostUsername, "@")) {
-		return "@" + strings.TrimPrefix(name, "@")
+func tablePlayerIsHost(player api.TablePlayer, table api.TableSummary) bool {
+	return player.UserID != "" && player.UserID == table.HostUserID
+}
+
+func (m Model) displayParticipantName(participant api.TableGameParticipant) string {
+	name := strings.TrimSpace(participant.PlayerName)
+	if m.table == nil {
+		return name
+	}
+	for _, player := range m.table.Players {
+		if player.ID == participant.PlayerID && tablePlayerIsHost(player, m.table.Table) {
+			return "@" + strings.TrimPrefix(name, "@")
+		}
 	}
 	return name
 }

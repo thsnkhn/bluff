@@ -29,18 +29,8 @@ type tableScrollMsg struct{ delta int }
 type tablesLoadedMsg struct{ tables []api.TableSummary }
 type tableLoadedMsg struct{ table api.TableDetail }
 type tableCreatedMsg struct{ table api.TableSummary }
-type tablePlayerCreatedMsg struct {
-	player     api.TablePlayer
-	inviteCode string
-}
-type tablePlayerUpdatedMsg struct {
-	player     api.TablePlayer
-	inviteCode string
-}
-type playerInviteCreatedMsg struct {
-	playerID string
-	code     string
-}
+type tablePlayerCreatedMsg struct{ player api.TablePlayer }
+type tablePlayerUpdatedMsg struct{ player api.TablePlayer }
 type tablePlayerRemovedMsg struct {
 	playerID string
 	disabled bool
@@ -297,17 +287,6 @@ func (m Model) updateTableKey(key string) (tea.Model, tea.Cmd, bool) {
 			return m, nil, true
 		}
 	case playerDetailScreen:
-		if m.playerInvitePopup {
-			if key == "esc" || key == "backspace" || key == "enter" {
-				m.playerInvitePopup = false
-				m.resetPlayerEditForm()
-				if m.form != nil {
-					return m, m.form.Init(), true
-				}
-				return m, nil, true
-			}
-			return m, nil, true
-		}
 		if m.playerDeleteConfirm && key != "alt+d" {
 			m.playerDeleteConfirm = false
 		}
@@ -315,11 +294,7 @@ func (m Model) updateTableKey(key string) (tea.Model, tea.Cmd, bool) {
 			updated, cmd := m.handleTableFormCompleted()
 			return updated, cmd, true
 		}
-		if key == "c" && m.table.CanManage && m.playerInviteCodeForCurrentPlayer() == "" {
-			m.loading, m.status, m.err = true, "Creating invite code", nil
-			return m, tea.Batch(m.spinner.Tick, m.createPlayerInviteCmd()), true
-		}
-		if key == "alt+d" && m.table.CanManage && !m.playerHasEntries() {
+		if key == "alt+d" && m.table.CanManage && !m.isCurrentPlayerHost() && !m.playerHasEntries() {
 			if !m.playerDeleteConfirm {
 				m.playerDeleteConfirm = true
 				return m, nil, true
@@ -328,7 +303,7 @@ func (m Model) updateTableKey(key string) (tea.Model, tea.Cmd, bool) {
 			m.loading, m.status, m.err = true, "Deleting player", nil
 			return m, tea.Batch(m.spinner.Tick, m.deletePlayerCmd()), true
 		}
-		if key == "x" && m.table.CanManage && m.playerHasEntries() {
+		if key == "x" && m.table.CanManage && !m.isCurrentPlayerHost() && m.playerHasEntries() {
 			m.loading, m.status, m.err = true, "Disabling player", nil
 			return m, tea.Batch(m.spinner.Tick, m.disablePlayerCmd()), true
 		}
@@ -1179,7 +1154,11 @@ func (m Model) tableStandings(width int) string {
 	for index, playerIndex := range m.visiblePlayerIndices() {
 		player := m.table.Players[playerIndex]
 		amount := standingStyle(player.Standing).Render(signedCredits(player.Standing))
-		name := valueStyle.Render(truncate(displayTablePlayerName(player, m.table.Table.HostUsername), max(width-20, 12)))
+		nameText := truncate(displayTablePlayerName(player), max(width-20, 12))
+		if tablePlayerIsHost(player, m.table.Table) {
+			nameText += " " + lipgloss.NewStyle().Foreground(colorFuchsia).Render("♛")
+		}
+		name := valueStyle.Render(nameText)
 		gap := max(width-lipgloss.Width(name)-lipgloss.Width(amount)-8, 1)
 		lines = append(lines, fmt.Sprintf("%2d  %s%s%s", index+1, name, strings.Repeat(" ", gap), amount))
 	}
@@ -1394,7 +1373,7 @@ func (m Model) gameInspectionPlayerList(game api.TableGame, width int) string {
 	})
 	items := make([]list.Item, 0, len(participants))
 	for _, participant := range participants {
-		name := displayParticipantName(participant.PlayerName, m.table.Table.HostUsername)
+		name := m.displayParticipantName(participant)
 		if !searchMatches(m.searchQuery, name) && !searchMatches(m.searchQuery, participant.PlayerName) {
 			continue
 		}
@@ -1419,7 +1398,7 @@ func (m Model) inspectionPlayerCount() int {
 	}
 	count := 0
 	for _, participant := range m.table.Games[m.gameIndex].Participants {
-		name := displayParticipantName(participant.PlayerName, m.table.Table.HostUsername)
+		name := m.displayParticipantName(participant)
 		if searchMatches(m.searchQuery, name) || searchMatches(m.searchQuery, participant.PlayerName) {
 			count++
 		}
@@ -1492,8 +1471,12 @@ func (m Model) playerList(width int) string {
 	for _, index := range visible {
 		player := m.table.Players[index]
 		selected := index == m.playerIndex
+		name := displayTablePlayerName(player)
+		if tablePlayerIsHost(player, m.table.Table) {
+			name += " " + lipgloss.NewStyle().Foreground(colorFuchsia).Render("♛")
+		}
 		rows = append(rows, bluffTableRow(selected,
-			truncate(displayTablePlayerName(player, m.table.Table.HostUsername), max(columns[0].Width, 1)),
+			truncate(name, max(columns[0].Width, 1)),
 			signedCreditNumber(player.Standing),
 		))
 	}
@@ -1551,23 +1534,7 @@ func (m Model) playerDetailView() string {
 	background := m
 	background.screen = playersScreen
 	background.err = nil
-	inviteCode := m.playerInviteCodeForCurrentPlayer()
-	if m.playerInvitePopup && inviteCode != "" {
-		body := lipgloss.JoinVertical(lipgloss.Left,
-			valueStyle.Render("Invite code"),
-			brandStyle.Render(inviteCode),
-			"",
-			mutedStyle.Render("Share this code once. It can be used to create one account."),
-		)
-		return m.formPopupWithActions(background.playersView(), "Invite code", body, "esc close", []actionBarItem{
-			{key: "esc", label: "Close", action: "close"},
-		})
-	}
-
 	details := []string{}
-	if inviteCode != "" {
-		details = append(details, mutedStyle.Render("Invite code"), brandStyle.Render(inviteCode))
-	}
 	body := lipgloss.JoinVertical(lipgloss.Left, details...)
 	if m.form != nil && m.playerCanEdit() {
 		formView := m.form.View()
@@ -1576,10 +1543,14 @@ func (m Model) playerDetailView() string {
 		} else {
 			body = lipgloss.JoinVertical(lipgloss.Left, formView, "", body)
 		}
-	} else if strings.TrimSpace(player.Username) != "" {
+	} else if player.UserID != "" {
+		username := strings.TrimSpace(player.Username)
+		if username == "" {
+			username = player.Name
+		}
 		body = lipgloss.JoinVertical(lipgloss.Left,
 			mutedStyle.Render("Username"),
-			valueStyle.Render("@"+player.Username),
+			valueStyle.Render("@"+strings.TrimPrefix(username, "@")),
 			"", body,
 		)
 	}
@@ -1590,23 +1561,21 @@ func (m Model) playerDetailView() string {
 		if m.playerCanEdit() {
 			popupActions = append([]actionBarItem{{key: "enter", label: "Save", action: "submit", accent: true}}, popupActions...)
 			footer = "enter save   esc close"
-			if inviteCode == "" {
-				popupActions = append([]actionBarItem{{key: "c", label: "Create invite", action: "invite", accent: true}}, popupActions...)
-				footer = "enter save   c invite   esc close"
-			}
 		}
-		if m.playerHasEntries() {
-			popupActions = append([]actionBarItem{{key: "x", label: "Disable", action: "disable", accent: true}}, popupActions...)
-			footer = "x disable   " + footer
-		} else {
-			deleteLabel := "Delete"
-			deleteHelp := "alt+d delete"
-			if m.playerDeleteConfirm {
-				deleteLabel = "Confirm Delete"
-				deleteHelp = "alt+d confirm delete"
+		if !m.isCurrentPlayerHost() {
+			if m.playerHasEntries() {
+				popupActions = append([]actionBarItem{{key: "x", label: "Disable", action: "disable", accent: true}}, popupActions...)
+				footer = "x disable   " + footer
+			} else {
+				deleteLabel := "Delete"
+				deleteHelp := "alt+d delete"
+				if m.playerDeleteConfirm {
+					deleteLabel = "Confirm Delete"
+					deleteHelp = "alt+d confirm delete"
+				}
+				popupActions = append([]actionBarItem{{key: "alt+d", label: deleteLabel, action: "delete"}}, popupActions...)
+				footer = deleteHelp + "   " + footer
 			}
-			popupActions = append([]actionBarItem{{key: "alt+d", label: deleteLabel, action: "delete"}}, popupActions...)
-			footer = deleteHelp + "   " + footer
 		}
 	}
 	headerStanding := standingStyle(player.Standing).Render(signedCredits(player.Standing))
@@ -1617,17 +1586,15 @@ func (m Model) playerCanEdit() bool {
 	if m.table == nil || m.playerIndex < 0 || m.playerIndex >= len(m.table.Players) {
 		return false
 	}
-	return m.table.CanManage && strings.TrimSpace(m.table.Players[m.playerIndex].Username) == ""
+	return m.table.CanManage && !m.isCurrentPlayerHost()
 }
 
-func (m Model) playerInviteCodeForCurrentPlayer() string {
+func (m Model) isCurrentPlayerHost() bool {
 	if m.table == nil || m.playerIndex < 0 || m.playerIndex >= len(m.table.Players) {
-		return ""
+		return false
 	}
-	if m.playerInviteCodes == nil {
-		return ""
-	}
-	return m.playerInviteCodes[m.table.Players[m.playerIndex].ID]
+	player := m.table.Players[m.playerIndex]
+	return tablePlayerIsHost(player, m.table.Table)
 }
 
 // formPopup composes a centered modal over the current page. The page remains
@@ -1780,7 +1747,7 @@ func (m Model) recordGameView() string {
 		background.err = nil
 		background.recordPopup = recordPopupNone
 		player := m.table.Players[m.recordPlayerIndex]
-		popupTitle := "Player earnings · " + displayTablePlayerName(player, m.table.Table.HostUsername)
+		popupTitle := "Player earnings · " + displayTablePlayerName(player)
 		popupActions := []actionBarItem{
 			{key: "enter", label: "Save", action: "submit", accent: true},
 			{key: "esc", label: "Close", action: "close"},
@@ -1908,7 +1875,7 @@ func (m Model) recordPlayerList(width int) string {
 	items := make([]list.Item, 0, len(visible))
 	for _, index := range visible {
 		player := m.table.Players[index]
-		name := displayTablePlayerName(player, m.table.Table.HostUsername)
+		name := displayTablePlayerName(player)
 		description := mutedStyle.Render("No earning added")
 		if m.recordPlayerAllIn(player.ID) {
 			description = lipgloss.NewStyle().Bold(true).Foreground(colorRed).Render("ALL IN")
@@ -1932,7 +1899,7 @@ func (m Model) recordReviewPlayerList(width int) string {
 		if !m.recordEntered[player.ID] {
 			continue
 		}
-		name := displayTablePlayerName(player, m.table.Table.HostUsername)
+		name := displayTablePlayerName(player)
 		pnl := -m.table.Formats[m.recordFormatIndex].RequiredEntry
 		description := lipgloss.NewStyle().Bold(true).Foreground(colorRed).Render("ALL IN")
 		if !m.recordPlayerAllIn(player.ID) {
@@ -2101,7 +2068,7 @@ func (m Model) recordReviewView(width int) string {
 	game := m.recordPreview
 	lines = append(lines, valueStyle.Render(fmt.Sprintf("Expected %s  ·  Actual %s", credits(game.ExpectedTableValue), credits(game.ActualTableValue))), "")
 	for _, participant := range game.Participants {
-		lines = append(lines, fmt.Sprintf("%-18s %8s  %s", truncate(displayParticipantName(participant.PlayerName, m.table.Table.HostUsername), 18), signedCredits(participant.ProfitLoss), standingStyle(participant.EndingStanding).Render(signedCredits(participant.EndingStanding))))
+		lines = append(lines, fmt.Sprintf("%-18s %8s  %s", truncate(m.displayParticipantName(participant), 18), signedCredits(participant.ProfitLoss), standingStyle(participant.EndingStanding).Render(signedCredits(participant.EndingStanding))))
 	}
 	lines = append(lines, "", lipgloss.NewStyle().Foreground(colorGreen).Render("✓ Balanced and ready to record"))
 	return strings.Join(lines, "\n")
@@ -2213,7 +2180,6 @@ func (m *Model) resetPlayerCreateForm() {
 	m.playerForm = &playerFormValues{}
 	m.form = newHuhForm(huh.NewGroup(
 		newHuhInput("Player name", "", "john", &m.playerForm.name, 48, false, required("enter a player name")),
-		popupConfirm("Generate invite code", &m.playerForm.generateInvite),
 	))
 	m.resizeForm()
 }
@@ -2225,16 +2191,13 @@ func (m *Model) resetPlayerEditForm() {
 		return
 	}
 	player := m.table.Players[m.playerIndex]
-	if strings.TrimSpace(player.Username) != "" || !m.table.CanManage {
+	if m.isCurrentPlayerHost() || !m.table.CanManage {
 		m.playerForm, m.form = nil, nil
 		return
 	}
 	m.playerForm = &playerFormValues{name: player.Name}
 	fields := []huh.Field{
 		newHuhInput("Player name", "", player.Name, &m.playerForm.name, 48, false, required("enter a player name")),
-	}
-	if m.playerInviteCodeForCurrentPlayer() == "" {
-		fields = append(fields, popupConfirm("Generate invite code", &m.playerForm.generateInvite))
 	}
 	m.form = newHuhForm(huh.NewGroup(fields...))
 	m.resizeForm()
@@ -2437,7 +2400,7 @@ func (m Model) createTableCmd() tea.Cmd {
 }
 
 func (m Model) createPlayerCmd() tea.Cmd {
-	tableID, name, generateInvite := m.table.Table.ID, strings.ToLower(strings.TrimSpace(m.playerForm.name)), m.playerForm.generateInvite
+	tableID, name := m.table.Table.ID, strings.ToLower(strings.TrimSpace(m.playerForm.name))
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), operationTimeout)
 		defer cancel()
@@ -2445,17 +2408,7 @@ func (m Model) createPlayerCmd() tea.Cmd {
 		if err != nil {
 			return operationFailedMsg{err: err}
 		}
-		var inviteCode string
-		if generateInvite {
-			// TODO: replace this account invite with a player-bound invite once
-			// the API exposes the player claim endpoint.
-			invitation, inviteErr := m.api.CreateInvitation(ctx, m.token)
-			if inviteErr != nil {
-				return operationFailedMsg{err: inviteErr}
-			}
-			inviteCode = invitation.Code
-		}
-		return tablePlayerCreatedMsg{player: player, inviteCode: inviteCode}
+		return tablePlayerCreatedMsg{player: player}
 	}
 }
 
@@ -2463,7 +2416,6 @@ func (m Model) updatePlayerCmd() tea.Cmd {
 	tableID := m.table.Table.ID
 	playerID := m.table.Players[m.playerIndex].ID
 	name := strings.ToLower(strings.TrimSpace(m.playerForm.name))
-	generateInvite := m.playerForm.generateInvite
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), operationTimeout)
 		defer cancel()
@@ -2471,31 +2423,7 @@ func (m Model) updatePlayerCmd() tea.Cmd {
 		if err != nil {
 			return operationFailedMsg{err: err}
 		}
-		var inviteCode string
-		if generateInvite {
-			invitation, inviteErr := m.api.CreateInvitation(ctx, m.token)
-			if inviteErr != nil {
-				return operationFailedMsg{err: inviteErr}
-			}
-			inviteCode = invitation.Code
-		}
-		return tablePlayerUpdatedMsg{player: player, inviteCode: inviteCode}
-	}
-}
-
-func (m Model) createPlayerInviteCmd() tea.Cmd {
-	if m.table == nil || m.playerIndex < 0 || m.playerIndex >= len(m.table.Players) {
-		return nil
-	}
-	playerID := m.table.Players[m.playerIndex].ID
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), operationTimeout)
-		defer cancel()
-		invitation, err := m.api.CreateInvitation(ctx, m.token)
-		if err != nil {
-			return operationFailedMsg{err: err}
-		}
-		return playerInviteCreatedMsg{playerID: playerID, code: invitation.Code}
+		return tablePlayerUpdatedMsg{player: player}
 	}
 }
 

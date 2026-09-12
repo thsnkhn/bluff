@@ -86,8 +86,7 @@ type formatFormValues struct {
 }
 
 type playerFormValues struct {
-	name           string
-	generateInvite bool
+	name string
 }
 
 type chipFormValue struct {
@@ -237,13 +236,10 @@ type Model struct {
 	recordEditVersion   int
 	recordQuickAdd      bool
 	recordQuickAddID    string
-	playerInviteCodes   map[string]string
-	playerInvitePopup   bool
 	playerDeleteConfirm bool
 	searchActive        bool
 	searchQuery         string
 	notice              string
-	pendingTableNotice  string
 	connected           bool
 	checkingConnection  bool
 	updateAvailable     *api.ClientRelease
@@ -258,15 +254,14 @@ func New(client API, store CredentialStore, build BuildInfo, installers ...Updat
 	busy := spinner.New(spinner.WithSpinner(spinner.MiniDot))
 	busy.Style = lipgloss.NewStyle().Foreground(colorFuchsia)
 	model := Model{
-		api:               client,
-		store:             store,
-		build:             build,
-		screen:            bootScreen,
-		spinner:           busy,
-		loading:           true,
-		status:            "Connecting",
-		formatEditIndex:   -1,
-		playerInviteCodes: make(map[string]string),
+		api:             client,
+		store:           store,
+		build:           build,
+		screen:          bootScreen,
+		spinner:         busy,
+		loading:         true,
+		status:          "Connecting",
+		formatEditIndex: -1,
 	}
 	if len(installers) > 0 {
 		model.updater = installers[0]
@@ -597,8 +592,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.tableNavIndex = int(tableOverviewSection)
 		m.expandedChart = tableChartNone
-		m.loading, m.table, m.err, m.notice = false, &msg.table, nil, m.pendingTableNotice
-		m.pendingTableNotice = ""
+		m.loading, m.table, m.err = false, &msg.table, nil
 		if m.recordQuickAdd && m.recordQuickAddID != "" {
 			for index, player := range m.table.Players {
 				if player.ID == m.recordQuickAddID {
@@ -620,9 +614,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading, m.status, m.err = true, "Opening table", nil
 		return m, tea.Batch(m.spinner.Tick, m.tableCmd(msg.table.ID))
 	case tablePlayerCreatedMsg:
-		if m.playerInviteCodes == nil {
-			m.playerInviteCodes = make(map[string]string)
-		}
 		if m.table != nil {
 			alreadyPresent := false
 			for _, player := range m.table.Players {
@@ -640,10 +631,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.screen = playersScreen
 		m.form = nil
-		if msg.inviteCode != "" {
-			m.playerInviteCodes[msg.player.ID] = msg.inviteCode
-			m.pendingTableNotice = "Invite code  " + msg.inviteCode + "  ·  share it once"
-		}
 		m.loading, m.status, m.err = false, "", nil
 		if m.recordQuickAdd {
 			m.playerIndex = len(m.table.Players) - 1
@@ -652,9 +639,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tablePlayerUpdatedMsg:
-		if m.playerInviteCodes == nil {
-			m.playerInviteCodes = make(map[string]string)
-		}
 		if m.table != nil {
 			for index, player := range m.table.Players {
 				if player.ID == msg.player.ID {
@@ -666,23 +650,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.form = nil
 		m.loading, m.status, m.err = false, "", nil
-		if msg.inviteCode != "" {
-			m.playerInviteCodes[msg.player.ID] = msg.inviteCode
-			m.playerInvitePopup = true
-		} else {
-			m.resetPlayerEditForm()
-			if m.form != nil {
-				return m, m.form.Init()
-			}
+		m.resetPlayerEditForm()
+		if m.form != nil {
+			return m, m.form.Init()
 		}
-		return m, nil
-	case playerInviteCreatedMsg:
-		if m.playerInviteCodes == nil {
-			m.playerInviteCodes = make(map[string]string)
-		}
-		m.playerInviteCodes[msg.playerID] = msg.code
-		m.playerInvitePopup = true
-		m.loading, m.status, m.err = false, "", nil
 		return m, nil
 	case tablePlayerRemovedMsg:
 		if m.table != nil {

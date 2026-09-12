@@ -82,10 +82,12 @@ type GameFormat struct {
 	Chips         []ChipDenomination `json:"chips"`
 }
 
-// TablePlayer is a table-scoped player profile and standing.
+// TablePlayer is a table-scoped player profile and standing. UserID and
+// Username are present only for the table's linked host player.
 type TablePlayer struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
+	UserID   string `json:"userId,omitempty"`
 	Username string `json:"username,omitempty"`
 	Active   bool   `json:"active"`
 	Standing int    `json:"standing"`

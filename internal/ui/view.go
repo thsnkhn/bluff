@@ -131,7 +131,12 @@ func (m Model) inviteCodeView() string {
 	if m.loading {
 		return m.loadingView()
 	}
-	parts := []string{brandLogo(m.width), "", "", brandStyle.Render("Join the table"), ""}
+	parts := []string{
+		brandLogo(m.width), "", "",
+		brandStyle.Render("Create your account"),
+		mutedStyle.Render("Enter the invite code from an administrator."),
+		"",
+	}
 	if m.err != nil {
 		parts = append(parts, errorStyle.Render("! "+friendlyError(m.err)), "")
 	}
@@ -148,6 +153,7 @@ func (m Model) inviteAccountView() string {
 		brandLogo(m.width), "", "",
 		brandStyle.Render("Choose your login"),
 		mutedStyle.Render("Invite ") + valueStyle.Render(strings.ToUpper(m.invite.code)),
+		mutedStyle.Render("This invitation creates your user account."),
 		"",
 	}
 	if m.err != nil {
@@ -278,7 +284,7 @@ func (m Model) userList(width int) string {
 	if len(m.users) == 0 {
 		return spacedEmptyState(lipgloss.JoinVertical(lipgloss.Center,
 			valueStyle.Render("No users yet"),
-			mutedStyle.Render("Create an invite code to welcome someone."),
+			mutedStyle.Render("Create an invite code to add a user."),
 		))
 	}
 	if len(m.visibleUserIndices()) == 0 {

@@ -989,6 +989,7 @@ func TestPlayerDeleteRequiresConfirmation(t *testing.T) {
 	t.Parallel()
 	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
 	model.screen, model.loading = playerDetailScreen, false
+	model.width, model.height = 100, 36
 	model.table = &api.TableDetail{
 		Table:     api.TableSummary{ID: "table-1"},
 		CanManage: true,
@@ -1017,6 +1018,48 @@ func TestPlayerDeleteRequiresConfirmation(t *testing.T) {
 	second := updated.(Model)
 	if !handled || cmd == nil || second.playerDeleteConfirm || !second.loading {
 		t.Fatalf("second delete press = handled=%v cmd=%v confirm=%v loading=%v; want delete command", handled, cmd != nil, second.playerDeleteConfirm, second.loading)
+	}
+}
+
+func TestHostPlayerIsLockedByUserLinkAndPlayerFormsHaveNoInvites(t *testing.T) {
+	t.Parallel()
+	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+	model.screen, model.loading = playerDetailScreen, false
+	model.width, model.height = 100, 36
+	model.table = &api.TableDetail{
+		Table:     api.TableSummary{ID: "table-1", HostUserID: "host-id", HostUsername: "alice"},
+		CanManage: true,
+		Players: []api.TablePlayer{
+			{ID: "host-player", Name: "alice", UserID: "host-id", Username: "alice"},
+			{ID: "ordinary-player", Name: "alice"},
+		},
+	}
+
+	model.playerIndex = 0
+	model.resetPlayerEditForm()
+	if model.form != nil {
+		t.Fatal("host player received an editable form")
+	}
+	for _, key := range []string{"alt+d", "x"} {
+		updated, cmd, handled := model.updateTableKey(key)
+		got := updated.(Model)
+		if handled || cmd != nil || got.loading {
+			t.Fatalf("host %s = handled=%v cmd=%v loading=%v; want no action", key, handled, cmd != nil, got.loading)
+		}
+	}
+
+	model.playerIndex = 1
+	model.resetPlayerEditForm()
+	if model.form == nil {
+		t.Fatal("ordinary player with the host's name was treated as the host")
+	}
+	model.resetPlayerCreateForm()
+	if strings.Contains(strings.ToLower(ansi.Strip(model.form.View())), "invite") {
+		t.Fatal("player creation form still offers an account invite")
+	}
+	playersView := ansi.Strip(model.playerList(80))
+	if strings.Count(playersView, "♛") != 1 {
+		t.Fatalf("player list host marker count = %d, want one:\n%s", strings.Count(playersView, "♛"), playersView)
 	}
 }
 
@@ -1463,9 +1506,9 @@ func TestTableChipChartSortsHighestValueFirst(t *testing.T) {
 	t.Parallel()
 	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
 	model.table = &api.TableDetail{
-		Table: api.TableSummary{HostUsername: "middle"},
+		Table: api.TableSummary{HostUserID: "host-middle", HostUsername: "middle"},
 		Players: []api.TablePlayer{
-			{Name: "middle", Standing: 100},
+			{Name: "middle", UserID: "host-middle", Username: "middle", Standing: 100},
 			{Name: "lowest", Standing: -900},
 			{Name: "highest", Standing: 2500},
 		},
@@ -1488,8 +1531,8 @@ func TestStandingsChartShowsLifetimeLedgerColumns(t *testing.T) {
 	t.Parallel()
 	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
 	model.table = &api.TableDetail{
-		Table:   api.TableSummary{HostUsername: "alice"},
-		Players: []api.TablePlayer{{ID: "p1", Name: "alice", Standing: 500}},
+		Table:   api.TableSummary{HostUserID: "host-alice", HostUsername: "alice"},
+		Players: []api.TablePlayer{{ID: "p1", Name: "alice", UserID: "host-alice", Username: "alice", Standing: 500}},
 		Games: []api.TableGame{
 			{Participants: []api.TableGameParticipant{{PlayerID: "p1", RequiredEntry: 2000, FinalValue: 2500}}},
 			{Participants: []api.TableGameParticipant{{PlayerID: "p1", RequiredEntry: 2000, FinalValue: 2000}}},
@@ -1512,9 +1555,9 @@ func TestTableStandingChartPlotsGamesWithPlayerLegend(t *testing.T) {
 	t.Parallel()
 	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
 	model.table = &api.TableDetail{
-		Table: api.TableSummary{HostUsername: "alice"},
+		Table: api.TableSummary{HostUserID: "host-alice", HostUsername: "alice"},
 		Players: []api.TablePlayer{
-			{ID: "player-1", Name: "alice"},
+			{ID: "player-1", Name: "alice", UserID: "host-alice", Username: "alice"},
 			{ID: "player-2", Name: "bob"},
 		},
 		Games: []api.TableGame{
