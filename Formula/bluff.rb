@@ -1,26 +1,26 @@
 class Bluff < Formula
   desc "Private poker ledger for the terminal"
   homepage "https://github.com/thsnkhn/bluff"
-  version "0.1.10"
+  version "0.1.11"
   license "GPL-3.0-only"
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/thsnkhn/bluff/releases/download/v0.1.10/bluff_v0.1.10_darwin_arm64.tar.gz"
-      sha256 "c76f88cd801a5138dcde9247b785958d982ce9caa3452eee53afe1973e3a649b"
+      url "https://github.com/thsnkhn/bluff/releases/download/v0.1.11/bluff_v0.1.11_darwin_arm64.tar.gz"
+      sha256 "94a5183c4187a28e265f68d64d1c73a4174a306d74986de4cd406a2ac9fade5f"
     else
-      url "https://github.com/thsnkhn/bluff/releases/download/v0.1.10/bluff_v0.1.10_darwin_amd64.tar.gz"
-      sha256 "65b33906f7ca145e12ce50dd98a407368c2ab9d4acce1ef43bd46d09b790bd73"
+      url "https://github.com/thsnkhn/bluff/releases/download/v0.1.11/bluff_v0.1.11_darwin_amd64.tar.gz"
+      sha256 "d850696346ce2061016c838081d2e3db817f1847c82746a4a5f07f0f5410519c"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://github.com/thsnkhn/bluff/releases/download/v0.1.10/bluff_v0.1.10_linux_arm64.tar.gz"
-      sha256 "7471946550289d2ea00eae25407a18610ea9bc3fe4c4813a90dc3a2e338f7234"
+      url "https://github.com/thsnkhn/bluff/releases/download/v0.1.11/bluff_v0.1.11_linux_arm64.tar.gz"
+      sha256 "e135c434afbdfcf5c38a8ef2adb9dfa3fe5f1593ba009e296ddc7b40a3bc8cbc"
     else
-      url "https://github.com/thsnkhn/bluff/releases/download/v0.1.10/bluff_v0.1.10_linux_amd64.tar.gz"
-      sha256 "ff06a7b7f5ab4ceb10f75241ff22d53f1fc95271aa2b674ad86a5d36e73f3316"
+      url "https://github.com/thsnkhn/bluff/releases/download/v0.1.11/bluff_v0.1.11_linux_amd64.tar.gz"
+      sha256 "1e263152b45d9763b1ab615db449cf7e323ee5094b79bdfab2fda4702eb6ab2f"
     end
   end
 
