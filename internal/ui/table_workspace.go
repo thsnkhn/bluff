@@ -202,7 +202,7 @@ func (m Model) tableOverviewContent(width int) string {
 		return m.tableStandingChartSized(width, m.expandedStandingChartHeight(), "esc back")
 	}
 	if m.expandedChart == tableChartStandings {
-		return m.tableChipChartWithShortcut(width, "esc back")
+		return m.tableChipChartWithShortcut(width, m.standingEntryShortcuts())
 	}
 	stats := m.tableOverviewStats(width)
 	statsBox := lipgloss.NewStyle().Width(width).Padding(0, 1).
@@ -346,12 +346,54 @@ func standingChartPalette() []color.Color {
 	}
 }
 
+func (m Model) standingEntryShortcuts() string {
+	shortcuts := []string{}
+	last := max(len(m.table.Games)-1, 0)
+	offset := min(max(m.standingEntryOffset, 0), last)
+	if offset < last {
+		shortcuts = append(shortcuts, "← prev")
+	}
+	if offset > 0 {
+		shortcuts = append(shortcuts, "→ next")
+	}
+	return strings.Join(append(shortcuts, "esc back"), "   ")
+}
+
 func (m Model) tableChipChart(width int) string {
 	return m.tableChipChartWithShortcut(width, "alt+s expand")
 }
 
 func (m Model) tableChipChartWithShortcut(width int, shortcut string) string {
-	lines := []string{chartSectionHeadingWithShortcut("Standings", shortcut, width), ""}
+	entryLabel := ""
+	if m.expandedChart == tableChartStandings && len(m.table.Games) > 0 {
+		snapshot := *m.table
+		m.table = &snapshot
+		games := append([]api.TableGame(nil), m.table.Games...)
+		sort.SliceStable(games, func(i, j int) bool { return games[i].Date < games[j].Date })
+		entry := len(games) - 1 - min(max(m.standingEntryOffset, 0), len(games)-1)
+		entryLabel = fmt.Sprintf("%d/%d · %s", entry+1, len(games), games[entry].Date)
+		if entry == len(games)-1 {
+			entryLabel += " · " + brandStyle.Foreground(colorGreen).Render("Latest")
+		}
+		// Reverse later entries to preserve each player's carried balance.
+		// TODO: Share this snapshot calculation if other history views need it.
+		m.table.Players = append([]api.TablePlayer(nil), m.table.Players...)
+		for index := len(games) - 1; index > entry; index-- {
+			for _, participant := range games[index].Participants {
+				for playerIndex := range m.table.Players {
+					if m.table.Players[playerIndex].ID == participant.PlayerID {
+						m.table.Players[playerIndex].Standing = participant.StartingStanding
+					}
+				}
+			}
+		}
+		m.table.Games = games[:entry+1]
+	}
+	title := "Standings"
+	if entryLabel != "" {
+		title += " · " + entryLabel
+	}
+	lines := []string{chartSectionHeadingWithShortcut(title, shortcut, width), ""}
 	players := append([]api.TablePlayer(nil), m.table.Players...)
 	sort.SliceStable(players, func(i, j int) bool {
 		if players[i].Standing == players[j].Standing {
@@ -367,23 +409,44 @@ func (m Model) tableChipChartWithShortcut(width int, shortcut string) string {
 		maximum = max(maximum, abs(player.Standing))
 	}
 	ledger := m.tablePlayerLedgerSummaries()
-	showLedger := width >= 88
+	previous := append([]api.TablePlayer(nil), players...)
+	for i := range previous {
+		previous[i].Standing -= ledger[previous[i].ID].change
+	}
+	ranks, oldRanks := standingRanks(players), standingRanks(previous)
+	showLedger := width >= 70
+	showInsights := width >= 110
 	nameWidth := min(max(width/5, 8), 16)
+	rankWidth := 9
 	valueWidth := 11
-	withdrawnWidth, buyInWidth, gamesWidth := 12, 12, 7
+	type column struct {
+		title string
+		width int
+	}
+	columns := []column{}
+	if showLedger {
+		columns = append(columns, column{"CHANGE", 11})
+	}
+	if showInsights {
+		columns = append(columns, column{"AVERAGE", 11}, column{"WIN %", 6})
+	}
+	if showLedger {
+		columns = append(columns, column{"GAMES", 7})
+	}
+	if showInsights {
+		columns = append(columns, column{"STREAK", 8})
+	}
 	ledgerWidth := 0
-	if showLedger {
-		ledgerWidth = withdrawnWidth + buyInWidth + gamesWidth + 3
+	for _, col := range columns {
+		ledgerWidth += col.width + 1
 	}
-	plotWidth := max(width-nameWidth-valueWidth-ledgerWidth, 12)
-	if showLedger {
-		header := strings.Repeat(" ", nameWidth+plotWidth) +
-			mutedStyle.Width(valueWidth).Align(lipgloss.Right).Render("BALANCE") + " " +
-			mutedStyle.Width(withdrawnWidth).Align(lipgloss.Right).Render("WITHDRAWN") + " " +
-			mutedStyle.Width(buyInWidth).Align(lipgloss.Right).Render("BUY-IN") + " " +
-			mutedStyle.Width(gamesWidth).Align(lipgloss.Right).Render("GAMES")
-		lines = append(lines, header)
+	const chartGap = "   "
+	plotWidth := max(width-rankWidth-nameWidth-valueWidth-ledgerWidth-len(chartGap), 4)
+	header := mutedStyle.Width(rankWidth).Render("RANK") + strings.Repeat(" ", nameWidth) + mutedStyle.Width(valueWidth).Align(lipgloss.Right).Render("BALANCE")
+	for _, col := range columns {
+		header += " " + mutedStyle.Width(col.width).Align(lipgloss.Right).Render(col.title)
 	}
+	lines = append(lines, header)
 	axis := plotWidth / 2
 	leftWidth, rightWidth := axis, plotWidth-axis-1
 	for playerIndex, player := range players {
@@ -415,14 +478,40 @@ func (m Model) tableChipChartWithShortcut(width int, shortcut string) string {
 		}
 		barView := lipgloss.NewStyle().Foreground(barColor).Render(string(bar))
 		value := standingStyle(player.Standing).Width(valueWidth).Align(lipgloss.Right).Render(signedCredits(player.Standing))
-		row := name + barView + value
-		if showLedger {
-			summary := ledger[player.ID]
-			row += " " + valueStyle.Width(withdrawnWidth).Align(lipgloss.Right).Render(credits(summary.withdrawn)) +
-				" " + valueStyle.Width(buyInWidth).Align(lipgloss.Right).Render(credits(summary.buyIn)) +
-				" " + valueStyle.Width(gamesWidth).Align(lipgloss.Right).Render(fmt.Sprintf("%d", summary.games))
+		summary := ledger[player.ID]
+		movement := oldRanks[player.ID] - ranks[player.ID]
+		marker := mutedStyle.Render("—")
+		if movement > 0 {
+			marker = standingStyle(1).Render(fmt.Sprintf("↑%d", movement))
 		}
-		lines = append(lines, row)
+		if movement < 0 {
+			marker = standingStyle(-1).Render(fmt.Sprintf("↓%d", -movement))
+		}
+		rank := valueStyle.Render(fmt.Sprintf("%d ", ranks[player.ID])) + marker
+		row := lipgloss.NewStyle().Width(rankWidth).Render(rank) + name + value
+		if showLedger {
+			row += " " + standingStyle(summary.change).Width(11).Align(lipgloss.Right).Render(signedCredits(summary.change))
+		}
+		if showInsights {
+			average, winRate, streak := "—", "—", "—"
+			if summary.games > 0 {
+				average = fmt.Sprintf("%+.0f cr", float64(summary.withdrawn-summary.buyIn)/float64(summary.games))
+				winRate = fmt.Sprintf("%.0f%%", 100*float64(summary.wins)/float64(summary.games))
+			}
+			if summary.streak > 0 {
+				streak = fmt.Sprintf("%dW", summary.streak)
+			}
+			if summary.streak < 0 {
+				streak = fmt.Sprintf("%dL", -summary.streak)
+			}
+			row += " " + standingStyle(summary.withdrawn-summary.buyIn).Width(11).Align(lipgloss.Right).Render(average) +
+				" " + valueStyle.Width(6).Align(lipgloss.Right).Render(winRate) +
+				" " + valueStyle.Width(7).Align(lipgloss.Right).Render(fmt.Sprint(summary.games)) +
+				" " + standingStyle(summary.streak).Width(8).Align(lipgloss.Right).Render(streak)
+		} else if showLedger {
+			row += " " + valueStyle.Width(7).Align(lipgloss.Right).Render(fmt.Sprint(summary.games))
+		}
+		lines = append(lines, row+chartGap+barView)
 		if m.expandedChart == tableChartStandings && playerIndex < len(players)-1 {
 			lines = append(lines, "")
 		}
@@ -430,17 +519,50 @@ func (m Model) tableChipChartWithShortcut(width int, shortcut string) string {
 	return strings.Join(lines, "\n")
 }
 
+// Equal balances share a rank; names never affect rank movement.
+func standingRanks(players []api.TablePlayer) map[string]int {
+	ranks := make(map[string]int, len(players))
+	for _, player := range players {
+		rank := 1
+		for _, other := range players {
+			if other.Standing > player.Standing {
+				rank++
+			}
+		}
+		ranks[player.ID] = rank
+	}
+	return ranks
+}
+
 type tablePlayerLedgerSummary struct {
 	withdrawn int
 	buyIn     int
 	games     int
+	change    int
+	wins      int
+	streak    int
 }
 
 func (m Model) tablePlayerLedgerSummaries() map[string]tablePlayerLedgerSummary {
 	summaries := make(map[string]tablePlayerLedgerSummary, len(m.table.Players))
-	for _, game := range m.table.Games {
+	games := append([]api.TableGame(nil), m.table.Games...)
+	sort.SliceStable(games, func(i, j int) bool { return games[i].Date < games[j].Date })
+	for index, game := range games {
 		for _, participant := range game.Participants {
 			summary := summaries[participant.PlayerID]
+			profit := participant.FinalValue - participant.RequiredEntry
+			if index == len(games)-1 {
+				summary.change = profit
+			}
+			switch {
+			case profit > 0:
+				summary.wins++
+				summary.streak = max(summary.streak, 0) + 1
+			case profit < 0:
+				summary.streak = min(summary.streak, 0) - 1
+			default:
+				summary.streak = 0
+			}
 			summary.withdrawn += participant.FinalValue
 			summary.buyIn += participant.RequiredEntry
 			summary.games++

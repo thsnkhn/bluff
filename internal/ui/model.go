@@ -207,6 +207,7 @@ type Model struct {
 	tableIndex          int
 	tableNavIndex       int
 	expandedChart       tableChartFocus
+	standingEntryOffset int
 	formatIndex         int
 	formatEditIndex     int
 	playerIndex         int

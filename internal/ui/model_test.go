@@ -1501,7 +1501,7 @@ func TestStandingsChartShowsLifetimeLedgerColumns(t *testing.T) {
 		t.Fatalf("ledger summary = %#v, want withdrawn 4500, buy-in 4000, games 2", summary)
 	}
 	view := ansi.Strip(model.tableChipChart(120))
-	for _, want := range []string{"BALANCE", "WITHDRAWN", "BUY-IN", "GAMES", "4500 cr", "4000 cr"} {
+	for _, want := range []string{"BALANCE", "CHANGE", "GAMES"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("standings chart is missing %q:\n%s", want, view)
 		}
@@ -1854,5 +1854,37 @@ func TestSortedPlayersUsesStandingThenName(t *testing.T) {
 		if got[index] != want[index] {
 			t.Fatalf("order = %v, want %v", got, want)
 		}
+	}
+}
+
+func TestStandingInsights(t *testing.T) {
+	model := New(fakeAPI{}, fakeStore{}, BuildInfo{})
+	model.table = &api.TableDetail{Players: []api.TablePlayer{{ID: "a", Standing: 80}, {ID: "b", Standing: 0}}, Games: []api.TableGame{
+		{Date: "2026-01-01", Participants: []api.TableGameParticipant{{PlayerID: "a", RequiredEntry: 100, FinalValue: 150}}},
+		{Date: "2026-01-02", Participants: []api.TableGameParticipant{{PlayerID: "a", RequiredEntry: 100, FinalValue: 130}}},
+		{Date: "2026-01-03", Participants: []api.TableGameParticipant{{PlayerID: "b", RequiredEntry: 100, FinalValue: 100}}},
+	}}
+	stats := model.tablePlayerLedgerSummaries()
+	if a := stats["a"]; a.change != 0 || a.games != 2 || a.wins != 2 || a.streak != 2 {
+		t.Fatalf("skipped game insights: %+v", a)
+	}
+	if stats["b"].streak != 0 || stats["b"].wins != 0 {
+		t.Fatal("break-even counted as a win")
+	}
+	model.screen = tableDetailScreen
+	model.expandedChart = tableChartStandings
+	model.standingEntryOffset = 1
+	view := ansi.Strip(model.tableChipChartWithShortcut(140, model.standingEntryShortcuts()))
+	for _, want := range []string{"CHANGE", "AVERAGE", "WIN %", "STREAK", "+30 cr", "+40 cr", "100%", "2W"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("missing %q: %s", want, view)
+		}
+	}
+	if len(model.table.Games) != 3 || model.table.Players[0].Standing != 80 {
+		t.Fatal("render changed source data")
+	}
+	ranks := standingRanks([]api.TablePlayer{{ID: "a", Standing: 10}, {ID: "b", Standing: 10}, {ID: "c", Standing: 0}})
+	if ranks["a"] != 1 || ranks["b"] != 1 || ranks["c"] != 3 {
+		t.Fatalf("tie ranks: %v", ranks)
 	}
 }

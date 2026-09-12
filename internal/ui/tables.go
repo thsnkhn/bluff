@@ -114,11 +114,21 @@ func (m Model) updateTableKey(key string) (tea.Model, tea.Cmd, bool) {
 		case "esc", "backspace":
 			m.expandedChart = tableChartNone
 			return m, nil, true
+		case "left", "right":
+			if m.expandedChart == tableChartStandings {
+				if key == "left" {
+					m.standingEntryOffset = min(m.standingEntryOffset+1, max(len(m.table.Games)-1, 0))
+				} else {
+					m.standingEntryOffset = max(m.standingEntryOffset-1, 0)
+				}
+			}
+			return m, nil, true
 		case "alt+h":
 			m.expandedChart = tableChartHistory
 			return m, nil, true
 		case "alt+s":
 			m.expandedChart = tableChartStandings
+			m.standingEntryOffset = 0
 			return m, nil, true
 		default:
 			// Focus mode owns the overview until it is closed. In particular,
@@ -180,6 +190,7 @@ func (m Model) updateTableKey(key string) (tea.Model, tea.Cmd, bool) {
 		case "alt+s":
 			if len(m.table.Games) > 0 {
 				m.expandedChart = tableChartStandings
+				m.standingEntryOffset = 0
 			}
 			return m, nil, true
 		case "r":
@@ -1149,6 +1160,9 @@ func (m Model) tableDetailView() string {
 	footer := tableDetailFooter()
 	if m.expandedChart != tableChartNone {
 		footer = "esc back"
+		if m.expandedChart == tableChartStandings {
+			footer = m.standingEntryShortcuts()
+		}
 	}
 	return m.tableWorkspace(tableOverviewSection, items, content, footer)
 }
